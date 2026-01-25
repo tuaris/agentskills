@@ -57,7 +57,7 @@ Host freebsd-dev
 Run this command as root on the FreeBSD host:
 
 ```bash
-pkg install sudo
+pkg install -y sudo
 ```
 
 Note: doas (security/doas) won't work - Cascade specifically invokes sudo.
@@ -80,7 +80,7 @@ Replace `USERNAME` with the actual username.
 Now that sudo is configured, install the remaining packages:
 
 ```bash
-sudo pkg install flock bash curl
+sudo pkg install -y flock bash curl
 ```
 
 ## Step 4: Change Default Shell to Bash
@@ -104,7 +104,7 @@ sudo service linux start
 Rocky Linux 9 (emulators/linux_base-rl9) provides glibc 2.28+, required by Windsurf's Node.js runtime. Do NOT use CentOS 7.
 
 ```bash
-sudo pkg install linux_base-rl9
+sudo pkg install -y linux_base-rl9
 sudo service linux restart
 ```
 
