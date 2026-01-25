@@ -40,7 +40,7 @@ ssh-copy-id -i ~/.ssh/id_ed25519.pub user@freebsd-host
 On Windows without ssh-copy-id, manually append the public key:
 
 ```powershell
-type %USERPROFILE%\.ssh\id_ed25519.pub | ssh user@freebsd-host "cat >> ~/.ssh/authorized_keys"
+type $env:USERPROFILE\.ssh\id_ed25519.pub | ssh user@freebsd-host "cat >> ~/.ssh/authorized_keys"
 ```
 
 Add to SSH config (`%USERPROFILE%\.ssh\config` on Windows, `~/.ssh/config` on Linux/macOS):
