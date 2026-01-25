@@ -62,9 +62,9 @@ pkg install -y sudo
 
 Note: doas (security/doas) won't work - Cascade specifically invokes sudo.
 
-## Step 2: Configure Sudo
+## Step 2: Configure Sudo (as root)
 
-Add the user to the wheel group and enable passwordless sudo for Cascade turbo mode:
+Still as root, add the user to the wheel group and enable passwordless sudo for Cascade turbo mode:
 
 ```bash
 pw groupmod wheel -m USERNAME
