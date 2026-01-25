@@ -17,9 +17,40 @@ This skill guides you through setting up a FreeBSD 15+ host for remote developme
 
 On a fresh FreeBSD installation, SSH access and sudo are NOT configured. The user must perform Steps 1-2 manually on the FreeBSD console (or via existing SSH with password authentication) as root before Cascade can manage the system remotely.
 
-**Ask the user:**
-1. Do you have SSH key access configured? If not, they'll need to enter passwords.
+**Ask the user and strongly encourage SSH key setup:**
+1. Do you have SSH key access configured? If not, guide them through Step 0 first.
 2. Is sudo already installed and configured? If not, Steps 1-2 must be done as root.
+
+## Step 0: Setup SSH Key Authentication (on local machine)
+
+**Strongly recommended before proceeding.** This enables passwordless remote access.
+
+Generate SSH key if needed:
+
+```bash
+ssh-keygen -t ed25519 -f ~/.ssh/id_ed25519
+```
+
+Copy to FreeBSD host (requires password authentication this one time):
+
+```bash
+ssh-copy-id -i ~/.ssh/id_ed25519.pub user@freebsd-host
+```
+
+On Windows without ssh-copy-id, manually append the public key:
+
+```powershell
+type %USERPROFILE%\.ssh\id_ed25519.pub | ssh user@freebsd-host "cat >> ~/.ssh/authorized_keys"
+```
+
+Add to SSH config (`%USERPROFILE%\.ssh\config` on Windows, `~/.ssh/config` on Linux/macOS):
+
+```
+Host freebsd-dev
+    HostName <ip-or-hostname>
+    User <username>
+    IdentityFile ~/.ssh/id_ed25519
+```
 
 ## Step 1: Install Sudo (as root)
 
@@ -65,6 +96,8 @@ sudo kldload linux64
 sudo sysrc linux_enable="YES"
 sudo service linux start
 ```
+
+**Note:** `service linux status` does NOT work on FreeBSD. The linux rc script only supports start/stop/restart.
 
 ## Step 6: Install Linux Userland (Rocky Linux 9)
 
@@ -122,37 +155,6 @@ Add to Windsurf settings.json:
   },
   "terminal.integrated.defaultProfile.linux": "bash"
 }
-```
-
-## Step 10: SSH Configuration (on local machine)
-
-**This step should be done early if starting from a fresh installation.**
-
-Generate SSH key if needed:
-
-```bash
-ssh-keygen -t ed25519 -f ~/.ssh/id_ed25519
-```
-
-Copy to FreeBSD host (requires password authentication):
-
-```bash
-ssh-copy-id -i ~/.ssh/id_ed25519.pub user@freebsd-host
-```
-
-On Windows without ssh-copy-id, manually append the public key:
-
-```powershell
-type %USERPROFILE%\.ssh\id_ed25519.pub | ssh user@freebsd-host "cat >> ~/.ssh/authorized_keys"
-```
-
-Add to SSH config (`%USERPROFILE%\.ssh\config` on Windows, `~/.ssh/config` on Linux/macOS):
-
-```
-Host freebsd-dev
-    HostName <ip-or-hostname>
-    User <username>
-    IdentityFile ~/.ssh/id_ed25519
 ```
 
 ## Known Issues
