@@ -4,7 +4,7 @@ description: Sets up classic FreeBSD jail infrastructure using ZFS and ip4=inher
 license: BSD-2-Clause
 compatibility: Requires FreeBSD 13.4 or later with at least one additional disk/volume for ZFS
 metadata:
-  author: tuaris
+  author: Daniel Morante
   version: "1.0"
   source: https://www.unibia.com/unibianet/freebsd/creating-classic-jail-freebsd-slightly-better-style
 ---
