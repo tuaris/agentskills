@@ -17,6 +17,12 @@
 
 set -eu
 
+# Must run as root
+if [ "$(id -u)" -ne 0 ]; then
+    echo "Error: This script must be run as root."
+    exit 1
+fi
+
 # Defaults
 ZFS_POOL="Storage"
 ZFS_DATASET="/Jails"

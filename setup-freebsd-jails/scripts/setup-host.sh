@@ -16,6 +16,12 @@
 
 set -eu
 
+# Must run as root
+if [ "$(id -u)" -ne 0 ]; then
+    echo "Error: This script must be run as root."
+    exit 1
+fi
+
 # Defaults
 SUBDOMAIN="local.tld"
 ZFS_POOL="Storage"

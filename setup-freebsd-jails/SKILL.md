@@ -123,7 +123,9 @@ Fetch and extract the FreeBSD base set:
 
 ```sh
 HOSTNAME=${NAME}.${SUBDOMAIN}
-FTP_SOURCE=ftp://ftp.freebsd.org/pub/FreeBSD/releases/amd64/amd64/${FREEBSD_VERSION}-RELEASE/base.txz
+ARCH=$(uname -m)
+ARCH_P=$(uname -p)
+FTP_SOURCE=ftp://ftp.freebsd.org/pub/FreeBSD/releases/${ARCH}/${ARCH_P}/${FREEBSD_VERSION}-RELEASE/base.txz
 
 fetch -o - $FTP_SOURCE | tar -xf - -C $DESTDIR --unlink
 ```
@@ -188,7 +190,7 @@ service jail start $NAME
 ### Install packages
 
 ```sh
-pkg --jail $NAME install -y <package-name>
+pkg -j $NAME install -y <package-name>
 ```
 
 ### Control services inside a jail
@@ -216,6 +218,17 @@ service jail restart $NAME
 ```sh
 service jail stop $NAME
 ```
+
+### Delete a jail
+
+```sh
+service jail stop $NAME
+zfs destroy -r ${ZFS_POOL}${ZFS_DATASET}/${NAME}
+rm /etc/jail.conf.d/${NAME}.conf
+rm -f /var/log/jail_console_${NAME}.log
+```
+
+Alternatively, use the `scripts/delete-jail.sh` helper which handles all of the above with safety checks.
 
 ## Recommended Post-Install Tuning
 
@@ -245,3 +258,21 @@ myjail {
   allow.mlock;
 }
 ```
+
+## Installing the Helper Scripts
+
+The `scripts/` directory contains optional helper scripts that automate the steps above:
+
+- `setup-host.sh` — Initialize the host (ZFS pool, `/etc/jail.conf`, boot services)
+- `create-jail.sh` — Create a new jail (ZFS dataset, fetch base, configure, register)
+- `delete-jail.sh` — Delete a jail (stop, destroy ZFS dataset, remove config and logs)
+
+To install them:
+
+```sh
+install -m 755 scripts/setup-host.sh /usr/local/sbin/setup-host
+install -m 755 scripts/create-jail.sh /usr/local/sbin/create-jail
+install -m 755 scripts/delete-jail.sh /usr/local/sbin/delete-jail
+```
+
+All scripts must be run as root and accept `-h` for usage information.

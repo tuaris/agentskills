@@ -17,6 +17,12 @@
 
 set -eu
 
+# Must run as root
+if [ "$(id -u)" -ne 0 ]; then
+    echo "Error: This script must be run as root."
+    exit 1
+fi
+
 # Defaults
 SUBDOMAIN="local.tld"
 FREEBSD_VERSION=""
@@ -48,13 +54,17 @@ fi
 
 # Auto-detect FreeBSD version from host if not specified
 if [ -z "$FREEBSD_VERSION" ]; then
-    FREEBSD_VERSION=$(freebsd-version | sed 's/-.*//')
+    FREEBSD_VERSION=$(freebsd-version | sed 's/-.*//') 
     echo "Auto-detected FreeBSD version: ${FREEBSD_VERSION}"
 fi
 
+# Derive architecture from host
+ARCH=$(uname -m)
+ARCH_P=$(uname -p)
+
 HOSTNAME="${NAME}.${SUBDOMAIN}"
 JAIL_CONFIGS="/etc/jail.conf.d"
-FTP_SOURCE="ftp://ftp.freebsd.org/pub/FreeBSD/releases/amd64/amd64/${FREEBSD_VERSION}-RELEASE/base.txz"
+FTP_SOURCE="ftp://ftp.freebsd.org/pub/FreeBSD/releases/${ARCH}/${ARCH_P}/${FREEBSD_VERSION}-RELEASE/base.txz"
 
 echo "==> Creating jail: ${NAME}"
 echo "    Hostname:  ${HOSTNAME}"
@@ -108,6 +118,10 @@ fi
 
 # Register the jail
 mkdir -p "$JAIL_CONFIGS"
+if [ -f "${JAIL_CONFIGS}/${NAME}.conf" ]; then
+    echo "Error: Jail config ${JAIL_CONFIGS}/${NAME}.conf already exists."
+    exit 1
+fi
 cat << EOF > "${JAIL_CONFIGS}/${NAME}.conf"
 ${NAME} {
 }
