@@ -163,7 +163,7 @@ Install the shell executable script from `scripts/update-windsurf-server.sh` int
 Then instruct the user they can run `update-windsurf-server` on the FreeBSD host after upgrading the Windsurf 
 IDE client.
 
-IMPORTANT: the destinations filename is `~/bin/update-windsurf-server` and should be user executable.
+IMPORTANT: the destination filename is `~/bin/update-windsurf-server` and should be user executable.
 
 ## Known Issues
 
