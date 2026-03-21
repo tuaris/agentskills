@@ -157,6 +157,14 @@ Add to Windsurf settings.json:
 }
 ```
 
+## Step 10: Install Windsurf Update Helper Script
+
+Install the shell executable script from `scripts/update-windsurf-server.sh` into the user's `~/bin` folder.  
+Then instruct the user they can run `update-windsurf-server` on the FreeBSD host after upgrading the Windsurf 
+IDE client.
+
+IMPORTANT: the destinations filename is `~/bin/update-windsurf-server` and should be user executable.
+
 ## Known Issues
 
 Kernel messages like these in dmesg are harmless:
