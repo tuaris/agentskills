@@ -36,6 +36,11 @@ portclippy Makefile
 
 Must produce **no output** and exit 0. portclippy validates Makefile variable ordering per [Chapter 15](https://docs.freebsd.org/en/books/porters-handbook/order/) of the Porter's Handbook.
 
+> **Note:** `portclippy` is part of the `portfmt` package. Install it with:
+> ```sh
+> pkg install portfmt
+> ```
+
 **Run portclippy before portlint** — fix ordering issues first.
 
 ## Step 3: Run portlint
