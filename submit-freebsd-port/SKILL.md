@@ -1,5 +1,5 @@
 ---
-name: submitting-freebsd-port
+name: submit-freebsd-port
 description: QA validation and submission of a FreeBSD port to the official ports tree via Bugzilla
 ---
 
