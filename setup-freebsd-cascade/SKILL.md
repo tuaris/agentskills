@@ -1,11 +1,13 @@
 ---
 name: setup-freebsd-cascade
-description: Sets up a FreeBSD host for Windsurf Cascade remote development, including Linux compatibility layer, required utilities, and manual server installation
+description: Sets up a FreeBSD host for Devin (formerly Windsurf) Cascade remote development, including Linux compatibility layer, required utilities, and manual server installation
 ---
 
-# Setup FreeBSD Host for Windsurf Cascade
+# Setup FreeBSD Host for Devin Cascade
 
-This skill guides you through setting up a FreeBSD 15+ host for remote development with Windsurf Cascade.
+This skill guides you through setting up a FreeBSD 15+ host for remote development with Devin (formerly Windsurf) and its Cascade AI.
+
+> **Rebrand note:** Windsurf has been renamed to **Devin**. The server component and data directories were renamed too: `windsurf-server` -> `devin-server` and `~/.windsurf-server` -> `~/.devin-server`. On the first connection after upgrading, the client automatically migrates `~/.windsurf-server` to `~/.devin-server`. The download host (`windsurf-stable.codeiumdata.com`), the bundled `extensions/windsurf` directory, and the `DISTRO_WINDSURF_VERSION` log variable kept their old names.
 
 ## Requirements
 
@@ -101,18 +103,18 @@ sudo service linux start
 
 ## Step 6: Install Linux Userland (Rocky Linux 9)
 
-Rocky Linux 9 (emulators/linux_base-rl9) provides glibc 2.28+, required by Windsurf's Node.js runtime. Do NOT use CentOS 7.
+Rocky Linux 9 (emulators/linux_base-rl9) provides glibc 2.28+, required by Devin's Node.js runtime. Do NOT use CentOS 7.
 
 ```bash
 sudo pkg install -y linux_base-rl9
 sudo service linux restart
 ```
 
-## Step 7: Manually Install Windsurf Server
+## Step 7: Manually Install the Devin Server
 
-Windsurf does NOT auto-install on FreeBSD. Get the commit ID and version from Windsurf's connection logs:
+Devin does NOT auto-install on FreeBSD; a connection attempt fails with `Error freebsd needs manual installation of remote extension host`. Get the commit ID and version from Devin's connection logs:
 
-1. Attempt to connect with Windsurf
+1. Attempt to connect with Devin
 2. Open Output panel (Ctrl+Shift+U)
 3. Select "Remote-SSH" from dropdown
 4. Look for `DISTRO_COMMIT` and `DISTRO_WINDSURF_VERSION`
@@ -123,28 +125,28 @@ Then run on the FreeBSD host:
 COMMIT_ID="<commit_id_from_logs>"
 VERSION="<version_from_logs>"
 
-mkdir -p ~/.windsurf-server/bin/${COMMIT_ID}
-cd ~/.windsurf-server/bin/${COMMIT_ID}
+mkdir -p ~/.devin-server/bin/${COMMIT_ID}
+cd ~/.devin-server/bin/${COMMIT_ID}
 
-curl -L -o windsurf-server.tar.gz \
-  "https://windsurf-stable.codeiumdata.com/linux-reh-x64/stable/${COMMIT_ID}/windsurf-reh-linux-x64-${VERSION}.tar.gz"
+curl -L -o devin-server.tar.gz \
+  "https://windsurf-stable.codeiumdata.com/linux-reh-x64/stable/${COMMIT_ID}/devin-reh-linux-x64-${VERSION}.tar.gz"
 
-tar -xzf windsurf-server.tar.gz --strip-components=1
-rm windsurf-server.tar.gz
+tar -xzf devin-server.tar.gz --strip-components=1
+rm devin-server.tar.gz
 ```
 
 ## Step 8: Verify Server Works
 
 ```bash
-~/.windsurf-server/bin/${COMMIT_ID}/bin/windsurf-server --version
-~/.windsurf-server/bin/${COMMIT_ID}/extensions/windsurf/bin/language_server_linux_x64 --version
+~/.devin-server/bin/${COMMIT_ID}/bin/devin-server --version
+~/.devin-server/bin/${COMMIT_ID}/extensions/windsurf/bin/language_server_linux_x64 --version
 ```
 
-Both commands should execute without errors.
+Both commands should execute without errors. Note the language server still lives under `extensions/windsurf` even after the rebrand.
 
-## Step 9: Configure Windsurf Terminal (on local machine)
+## Step 9: Configure the Devin Terminal (on local machine)
 
-Add to Windsurf settings.json:
+Add to Devin's settings.json:
 
 ```json
 {
@@ -157,13 +159,23 @@ Add to Windsurf settings.json:
 }
 ```
 
-## Step 10: Install Windsurf Update Helper Script
+## Step 10: Install the Devin Update Helper Script
 
-Install the shell executable script from `scripts/update-windsurf-server.sh` into the user's `~/bin` folder.  
-Then instruct the user they can run `update-windsurf-server` on the FreeBSD host after upgrading the Windsurf 
+Install the shell executable script from `scripts/update-devin-server.sh` into the user's `~/bin` folder.  
+Then instruct the user they can run `update-devin-server` on the FreeBSD host after upgrading the Devin
 IDE client.
 
-IMPORTANT: the destination filename is `~/bin/update-windsurf-server` and should be user executable.
+IMPORTANT: the destination filename is `~/bin/update-devin-server` and should be user executable.
+
+The script requires `jq` (`sudo pkg install -y jq`). It auto-detects the target commit from the empty
+`~/.devin-server/bin/<commit>/` directory that a failed connection leaves behind, then resolves the exact
+download URL, version, and SHA-256 from the per-commit CDN manifest
+(`https://windsurf-stable.codeiumdata.com/linux-reh-x64/stable/manifest-<commit>.json`).
+
+Do NOT use the legacy `https://windsurf-stable.codeium.com/api/update/...` endpoint to discover the "latest"
+build: after the rebrand that channel still serves the final Windsurf release, which will never match a Devin
+client. The per-commit manifest is the source of truth. Typical workflow after an upgrade: click Connect (it
+fails and creates the placeholder dir), run `update-devin-server`, then reconnect.
 
 ## Known Issues
 
@@ -175,4 +187,4 @@ linux: jid 0 pid 2602 (language_server_lin): unsupported prctl option 1398164801
 linux: jid 0 pid 2690 (libuv-worker): unsupported ioctl TIOCGPTPEER
 ```
 
-Windsurf and Cascade function correctly despite these warnings.
+Devin and Cascade function correctly despite these warnings.
