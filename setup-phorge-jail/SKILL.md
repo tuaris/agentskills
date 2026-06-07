@@ -38,7 +38,7 @@ Before starting, ask the user for:
 4. **MariaDB connection** — host, port, credentials (or create new)
 5. **SMTP server** — for sending email notifications (host, port, auth)
 6. **Timezone** — e.g., `America/New_York`
-7. **Internal port** — port nginx will listen on inside the jail (default: 8083)
+7. **Internal port** — port Apache will listen on inside the jail (default: 8083)
 
 ## Step 1: Create the Jail
 
@@ -54,7 +54,7 @@ service jail start phorge
 ```sh
 pkg -j phorge install -y \
   phorgeitphorge-php84 \
-  nginx \
+  apache24 \
   php84 \
   php84-extensions \
   php84-mysqli \
@@ -173,61 +173,51 @@ jexec phorge /usr/local/lib/php/phorge/bin/storage upgrade --force
 
 This creates ~30 databases with the `phorge_` prefix and applies all schema migrations.
 
-## Step 9: Configure nginx
+## Step 9: Configure Apache
 
-Create `/usr/local/etc/nginx/nginx.conf` inside the jail:
+Disable the default Listen 80 and create a Phorge VirtualHost. First, edit `/usr/local/etc/apache24/httpd.conf` inside the jail:
 
-```nginx
-worker_processes 2;
-events { worker_connections 128; }
+```sh
+# Comment out default Listen 80
+jexec phorge sed -i "" 's/^Listen 80$/#Listen 80/' /usr/local/etc/apache24/httpd.conf
 
-http {
-    include       mime.types;
-    default_type  application/octet-stream;
-    sendfile      on;
-    keepalive_timeout 65;
-    client_max_body_size 64m;
-
-    server {
-        listen <INTERNAL_PORT>;
-        server_name <HOSTNAME>;
-        root /usr/local/lib/php/phorge/webroot;
-
-        location / {
-            index index.php;
-            rewrite ^/(.*)$ /index.php?__path__=/$1 last;
-        }
-
-        location = /favicon.ico {
-            try_files $uri =204;
-        }
-
-        location /index.php {
-            fastcgi_pass unix:/var/run/php-fpm.sock;
-            fastcgi_index index.php;
-            fastcgi_param SCRIPT_FILENAME $document_root$fastcgi_script_name;
-            fastcgi_param QUERY_STRING $query_string;
-            fastcgi_param REQUEST_METHOD $request_method;
-            fastcgi_param CONTENT_TYPE $content_type;
-            fastcgi_param CONTENT_LENGTH $content_length;
-            fastcgi_param REQUEST_URI $request_uri;
-            fastcgi_param DOCUMENT_URI $document_uri;
-            fastcgi_param DOCUMENT_ROOT $document_root;
-            fastcgi_param SERVER_PROTOCOL $server_protocol;
-            fastcgi_param GATEWAY_INTERFACE CGI/1.1;
-            fastcgi_param SERVER_SOFTWARE nginx;
-            fastcgi_param REMOTE_ADDR $remote_addr;
-            fastcgi_param REMOTE_PORT $remote_port;
-            fastcgi_param SERVER_ADDR $server_addr;
-            fastcgi_param SERVER_PORT $server_port;
-            fastcgi_param SERVER_NAME $host;
-            fastcgi_param HTTPS on;
-        }
-    }
-}
+# Enable required modules
+jexec phorge sed -i "" 's/^#LoadModule rewrite_module/LoadModule rewrite_module/' /usr/local/etc/apache24/httpd.conf
+jexec phorge sed -i "" 's/^#LoadModule proxy_module/LoadModule proxy_module/' /usr/local/etc/apache24/httpd.conf
+jexec phorge sed -i "" 's/^#LoadModule proxy_fcgi_module/LoadModule proxy_fcgi_module/' /usr/local/etc/apache24/httpd.conf
 ```
 
-> **Important:** Set `fastcgi_param HTTPS on;` when behind a TLS-terminating reverse proxy so Phorge generates correct `https://` URLs.
+Create `/usr/local/etc/apache24/Includes/phorge.conf` inside the jail:
+
+```apache
+Listen <INTERNAL_PORT>
+
+<VirtualHost *:<INTERNAL_PORT>>
+    ServerName <HOSTNAME>
+    ServerAlias <FILES_HOSTNAME>
+    DocumentRoot /usr/local/lib/php/phorge/webroot
+
+    RewriteEngine on
+    RewriteRule ^/rsrc/(.*) - [L,QSA]
+    RewriteRule ^/favicon.ico - [L,QSA]
+    RewriteRule ^(.*)$ /index.php?__path__=$1 [B,L,QSA]
+
+    <Directory "/usr/local/lib/php/phorge/webroot">
+        Require all granted
+    </Directory>
+
+    <FilesMatch "\.php$">
+        SetHandler "proxy:unix:/var/run/php-fpm.sock|fcgi://localhost"
+    </FilesMatch>
+
+    SetEnv HTTPS on
+
+    # Increase limits for file uploads
+    LimitRequestBody 67108864
+</VirtualHost>
+```
+
+> **Important:** `SetEnv HTTPS on` tells Phorge it's behind a TLS-terminating reverse proxy so it generates correct `https://` URLs.
 
 ## Step 10: Enable Password Auth Provider
 
@@ -293,11 +283,11 @@ This prints a one-time URL that grants immediate access.
 ## Step 13: Enable Services
 
 ```sh
-jexec phorge sysrc nginx_enable=YES
+jexec phorge sysrc apache24_enable=YES
 jexec phorge sysrc php_fpm_enable=YES
 jexec phorge sysrc phd_enable=YES
 jexec phorge service php_fpm start
-jexec phorge service nginx start
+jexec phorge service apache24 start
 jexec phorge service phd start
 ```
 
@@ -335,7 +325,7 @@ jexec phorge /usr/local/lib/php/phorge/bin/config set auth.lock-config true
 
 ## Step 16: Reverse Proxy Configuration
 
-The jail's nginx listens on an internal port (e.g., 8083). A reverse proxy on the host handles TLS termination and routes traffic to the jail.
+The jail's Apache listens on an internal port (e.g., 8083). A reverse proxy on the host handles TLS termination and routes traffic to the jail.
 
 ### HAProxy Example
 
@@ -352,25 +342,6 @@ frontend https_front
 
 backend phorge_back
     server phorge 127.0.0.1:8083 check
-```
-
-### nginx Reverse Proxy Example
-
-```nginx
-server {
-    listen 443 ssl;
-    server_name phorge.example.com files-phorge.example.com;
-
-    ssl_certificate /path/to/cert.pem;
-    ssl_certificate_key /path/to/key.pem;
-
-    location / {
-        proxy_pass http://127.0.0.1:8083;
-        proxy_set_header Host $host;
-        proxy_set_header X-Forwarded-Proto https;
-        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-    }
-}
 ```
 
 ## Post-Install: Useful Commands
@@ -411,5 +382,5 @@ jexec phorge /usr/local/lib/php/phorge/bin/config set <key> <value>
 - **"MySQL credentials not configured"** — Check `local.json` has correct mysql.host/user/pass. Remember `%` doesn't match `localhost` in MySQL grants.
 - **"Account needs approval"** — Set `auth.require-approval` to `false` or use `bin/auth recover`.
 - **Setup issues in UI** — Check the notification badge after login; common ones are `local_infile`, `sql_mode`, missing pygments.
-- **Blank page or 502** — Check `php_fpm` is running and nginx can reach the socket.
-- **"HTTPS" issues** — Ensure `fastcgi_param HTTPS on;` is set in nginx when behind a TLS proxy.
+- **Blank page or 502** — Check `php_fpm` is running and Apache can reach the socket (`proxy:unix:/var/run/php-fpm.sock`).
+- **"HTTPS" issues** — Ensure `SetEnv HTTPS on` is set in the Apache VirtualHost when behind a TLS proxy.
