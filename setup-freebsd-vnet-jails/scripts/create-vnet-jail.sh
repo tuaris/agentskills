@@ -4,17 +4,21 @@
 #
 # Usage: create-vnet-jail.sh -n name -i ip -I id [-d domain] [-v version]
 #                            [-p pool] [-g gateway] [-m mirror] [-N netmask]
+#                            [-6 ip6] [-L prefix6] [-G gateway6]
 #
 # Options:
 #   -n NAME        Jail name (required)
-#   -i IP          Jail IP on the bridge subnet (required, e.g. 10.99.0.1)
+#   -i IP          Jail IPv4 on the bridge subnet (required, e.g. 10.99.0.1)
 #   -I ID          Unique integer for epair numbering (required, e.g. 0, 1, 2)
 #   -d DOMAIN      Domain suffix (default: from jail.conf or vnet.morante.com)
 #   -v VERSION     FreeBSD version (default: auto-detect from host)
 #   -p POOL        ZFS pool name (default: Storage)
-#   -g GATEWAY     Bridge gateway IP (default: 10.99.0.254)
+#   -g GATEWAY     Bridge IPv4 gateway (default: 10.99.0.254)
 #   -m MIRROR      Base.txz mirror URL prefix (default: https://download.morante.org)
-#   -N NETMASK     Subnet prefix length (default: 24)
+#   -N NETMASK     IPv4 subnet prefix length (default: 24)
+#   -6 IP6         Jail IPv6 address (optional, e.g. fd10:99::21)
+#   -L PREFIX6     IPv6 prefix length (default: 64)
+#   -G GATEWAY6    Bridge IPv6 gateway (optional, e.g. fd10:99::254)
 #
 
 set -eu
@@ -32,16 +36,19 @@ FREEBSD_VERSION=""
 ZFS_POOL="Storage"
 GATEWAY="10.99.0.254"
 NETMASK="24"
+JAIL_IP6=""
+PREFIX6="64"
+GATEWAY6=""
 MIRROR="https://download.morante.org"
 DOMAIN=$(grep '^\$domain' /etc/jail.conf 2>/dev/null | sed 's/.*"\(.*\)".*/\1/')
 : "${DOMAIN:=vnet.morante.com}"
 
 usage() {
-    echo "Usage: $0 -n name -i ip -I id [-d domain] [-v version] [-p pool] [-g gateway] [-m mirror]"
+    echo "Usage: $0 -n name -i ip -I id [-d domain] [-v version] [-p pool] [-g gateway] [-m mirror] [-6 ip6] [-L prefix6] [-G gateway6]"
     exit 1
 }
 
-while getopts "n:i:I:d:v:p:g:m:N:h" opt; do
+while getopts "n:i:I:d:v:p:g:m:N:6:L:G:h" opt; do
     case $opt in
         n) NAME="$OPTARG" ;;
         i) JAIL_IP="$OPTARG" ;;
@@ -52,6 +59,9 @@ while getopts "n:i:I:d:v:p:g:m:N:h" opt; do
         g) GATEWAY="$OPTARG" ;;
         m) MIRROR="$OPTARG" ;;
         N) NETMASK="$OPTARG" ;;
+        6) JAIL_IP6="$OPTARG" ;;
+        L) PREFIX6="$OPTARG" ;;
+        G) GATEWAY6="$OPTARG" ;;
         h) usage ;;
         *) usage ;;
     esac
@@ -74,9 +84,12 @@ BASE_URL="${MIRROR}/releases/${ARCH}/${ARCH_P}/${FREEBSD_VERSION}-RELEASE/base.t
 
 echo "==> Creating vnet jail: ${NAME}"
 echo "    Hostname:  ${HOSTNAME}"
-echo "    IP:        ${JAIL_IP}/${NETMASK}"
+echo "    IPv4:      ${JAIL_IP}/${NETMASK}"
+if [ -n "$JAIL_IP6" ]; then
+    echo "    IPv6:      ${JAIL_IP6}/${PREFIX6}"
+fi
 echo "    Epair ID:  ${JAIL_ID}"
-echo "    Gateway:   ${GATEWAY}"
+echo "    Gateway:   ${GATEWAY}${GATEWAY6:+, ${GATEWAY6} (v6)}"
 echo "    Dataset:   ${ZFS_POOL}/Jails/${NAME}"
 echo "    Source:    ${BASE_URL}"
 echo ""
@@ -106,6 +119,12 @@ touch "${DESTDIR}/etc/rc.conf"
 sysrc -f "${DESTDIR}/etc/rc.conf" hostname="${HOSTNAME}"
 sysrc -f "${DESTDIR}/etc/rc.conf" "ifconfig_epair${JAIL_ID}b=inet ${JAIL_IP}/${NETMASK}"
 sysrc -f "${DESTDIR}/etc/rc.conf" defaultrouter="${GATEWAY}"
+if [ -n "$JAIL_IP6" ]; then
+    sysrc -f "${DESTDIR}/etc/rc.conf" "ifconfig_epair${JAIL_ID}b_ipv6=inet6 ${JAIL_IP6}/${PREFIX6}"
+    if [ -n "$GATEWAY6" ]; then
+        sysrc -f "${DESTDIR}/etc/rc.conf" ipv6_defaultrouter="${GATEWAY6}"
+    fi
+fi
 
 printf "nameserver %s\n" "${GATEWAY}" > "${DESTDIR}/etc/resolv.conf"
 cp /etc/localtime "${DESTDIR}/etc/localtime"
@@ -152,4 +171,7 @@ echo "==> Jail '${NAME}' created successfully."
 echo "    Start:    service jail start ${NAME}"
 echo "    Enter:    jexec ${NAME} /bin/sh"
 echo "    Packages: pkg -j ${NAME} install -y <pkg>"
-echo "    IP:       ${JAIL_IP} (epair${JAIL_ID}b)"
+echo "    IPv4:     ${JAIL_IP} (epair${JAIL_ID}b)"
+if [ -n "$JAIL_IP6" ]; then
+    echo "    IPv6:     ${JAIL_IP6}/${PREFIX6} (epair${JAIL_ID}b)"
+fi
