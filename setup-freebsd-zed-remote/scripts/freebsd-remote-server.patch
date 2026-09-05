@@ -1,0 +1,153 @@
+diff --git a/Cargo.lock b/Cargo.lock
+index bcf0b8b..d9c26c7 100644
+--- a/Cargo.lock
++++ b/Cargo.lock
+@@ -4279,6 +4279,7 @@ version = "0.1.0"
+ dependencies = [
+  "async-process",
+  "crash-handler",
++ "futures 0.3.32",
+  "libc",
+  "log",
+  "mach2 0.5.0",
+diff --git a/crates/crashes/Cargo.toml b/crates/crashes/Cargo.toml
+index 1b11809..1d7df2f 100644
+--- a/crates/crashes/Cargo.toml
++++ b/crates/crashes/Cargo.toml
+@@ -6,13 +6,16 @@ edition.workspace = true
+ license = "GPL-3.0-or-later"
+ 
+ [dependencies]
+-async-process.workspace = true
+-crash-handler.workspace = true
++futures.workspace = true
+ log.workspace = true
+-minidumper.workspace = true
+ parking_lot.workspace = true
+ serde.workspace = true
+ serde_json.workspace = true
++
++[target.'cfg(not(target_os = "freebsd"))'.dependencies]
++async-process.workspace = true
++crash-handler.workspace = true
++minidumper.workspace = true
+ system_specs.workspace = true
+ zstd.workspace = true
+ 
+@@ -29,4 +32,4 @@ windows.workspace = true
+ workspace = true
+ 
+ [lib]
+-path = "src/crashes.rs"
++path = "src/lib.rs"
+diff --git a/crates/crashes/src/crashes_freebsd.rs b/crates/crashes/src/crashes_freebsd.rs
+new file mode 100644
+index 0000000..acdbb8c
+--- /dev/null
++++ b/crates/crashes/src/crashes_freebsd.rs
+@@ -0,0 +1,48 @@
++use std::future::Future;
++use std::path::{Path, PathBuf};
++
++use serde::{Deserialize, Serialize};
++
++pub static REQUESTED_MINIDUMP: std::sync::atomic::AtomicBool =
++    std::sync::atomic::AtomicBool::new(false);
++
++/// Placeholder client handle. FreeBSD has no crash-handler/minidumper
++/// backend, so there is nothing real to hand back to callers; the value
++/// itself is never inspected, only held/dropped.
++#[derive(Debug, Clone)]
++pub struct Client;
++
++#[derive(Debug, Deserialize, Serialize, Clone)]
++pub struct InitCrashHandler {
++    pub session_id: String,
++    pub zed_version: String,
++    pub binary: String,
++    pub release_channel: String,
++    pub commit_sha: String,
++}
++
++pub fn init<F, S, C, P>(
++    _crash_init: InitCrashHandler,
++    _spawn: S,
++    _socket_path: P,
++    _wait_timer: C,
++) -> impl Future<Output = std::sync::Arc<Client>> + use<F, C, S, P>
++where
++    F: Future<Output = ()> + Send + Sync + 'static,
++    C: (Fn(std::time::Duration) -> F) + Send + Sync + 'static,
++    S: FnOnce(std::pin::Pin<Box<dyn Future<Output = ()> + Send + 'static>>),
++    P: FnOnce(u32) -> PathBuf,
++{
++    log::info!("crash handler disabled on FreeBSD");
++    async { std::sync::Arc::new(Client) }
++}
++
++pub fn force_backtrace() {}
++
++pub fn crash_server(_socket: &Path, _logs_dir: PathBuf) {
++    log::info!("crash server disabled on FreeBSD");
++}
++
++pub fn set_gpu_info(_specs: ()) {}
++
++pub fn set_user_info(_info: ()) {}
+diff --git a/crates/crashes/src/crashes.rs b/crates/crashes/src/crashes_full.rs
+similarity index 100%
+rename from crates/crashes/src/crashes.rs
+rename to crates/crashes/src/crashes_full.rs
+diff --git a/crates/crashes/src/lib.rs b/crates/crashes/src/lib.rs
+new file mode 100644
+index 0000000..e3e359a
+--- /dev/null
++++ b/crates/crashes/src/lib.rs
+@@ -0,0 +1,11 @@
++#[cfg(not(target_os = "freebsd"))]
++mod crashes_full;
++
++#[cfg(not(target_os = "freebsd"))]
++pub use crashes_full::*;
++
++#[cfg(target_os = "freebsd")]
++mod crashes_freebsd;
++
++#[cfg(target_os = "freebsd")]
++pub use crashes_freebsd::*;
+diff --git a/crates/fs/src/fs.rs b/crates/fs/src/fs.rs
+index 7bec1f8..4c69251 100644
+--- a/crates/fs/src/fs.rs
++++ b/crates/fs/src/fs.rs
+@@ -471,8 +471,8 @@ impl FileHandle for std::fs::File {
+         };
+ 
+         let fd = self.as_fd();
+-        let mut kif = MaybeUninit::<libc::kinfo_file>::uninit();
+-        kif.kf_structsize = libc::KINFO_FILE_SIZE;
++        let mut kif = MaybeUninit::<libc::kinfo_file>::zeroed();
++        unsafe { (*kif.as_mut_ptr()).kf_structsize = libc::KINFO_FILE_SIZE; }
+ 
+         let result = unsafe { libc::fcntl(fd.as_raw_fd(), libc::F_KINFO, kif.as_mut_ptr()) };
+         anyhow::ensure!(result != -1, "fcntl returned -1");
+diff --git a/crates/gpui/src/gpui.rs b/crates/gpui/src/gpui.rs
+index 41e3c47..031351c 100644
+--- a/crates/gpui/src/gpui.rs
++++ b/crates/gpui/src/gpui.rs
+@@ -42,6 +42,7 @@ pub mod profiler;
+     test,
+     target_os = "windows",
+     target_os = "linux",
++    target_os = "freebsd",
+     target_family = "wasm",
+     feature = "test-support",
+     feature = "bench-support"
+@@ -146,7 +147,7 @@ pub use keymap::*;
+ pub use path_builder::*;
+ pub use platform::*;
+ pub use profiler::*;
+-#[cfg(any(target_os = "windows", target_os = "linux", target_family = "wasm"))]
++#[cfg(any(target_os = "windows", target_os = "linux", target_os = "freebsd", target_family = "wasm"))]
+ pub use queue::{PriorityQueueReceiver, PriorityQueueSender};
+ pub use refineable::*;
+ pub use scene::*;
