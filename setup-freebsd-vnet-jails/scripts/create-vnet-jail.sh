@@ -10,11 +10,11 @@
 #   -n NAME        Jail name (required)
 #   -i IP          Jail IPv4 on the bridge subnet (required, e.g. 10.99.0.1)
 #   -I ID          Unique integer for epair numbering (required, e.g. 0, 1, 2)
-#   -d DOMAIN      Domain suffix (default: from jail.conf or vnet.morante.com)
+#   -d DOMAIN      Domain suffix (default: from jail.conf or vnet.domain.tld)
 #   -v VERSION     FreeBSD version (default: auto-detect from host)
 #   -p POOL        ZFS pool name (default: Storage)
 #   -g GATEWAY     Bridge IPv4 gateway (default: 10.99.0.254)
-#   -m MIRROR      Base.txz mirror URL prefix (default: https://download.morante.org)
+#   -m MIRROR      Base.txz mirror URL prefix (default: https://download.freebsd.org)
 #   -N NETMASK     IPv4 subnet prefix length (default: 24)
 #   -6 IP6         Jail IPv6 address (optional, e.g. fd10:99::21)
 #   -L PREFIX6     IPv6 prefix length (default: 64)
@@ -39,9 +39,9 @@ NETMASK="24"
 JAIL_IP6=""
 PREFIX6="64"
 GATEWAY6=""
-MIRROR="https://download.morante.org"
+MIRROR="https://download.freebsd.org"
 DOMAIN=$(grep '^\$domain' /etc/jail.conf 2>/dev/null | sed 's/.*"\(.*\)".*/\1/')
-: "${DOMAIN:=vnet.morante.com}"
+: "${DOMAIN:=vnet.domain.tld}"
 
 usage() {
     echo "Usage: $0 -n name -i ip -I id [-d domain] [-v version] [-p pool] [-g gateway] [-m mirror] [-6 ip6] [-L prefix6] [-G gateway6]"
