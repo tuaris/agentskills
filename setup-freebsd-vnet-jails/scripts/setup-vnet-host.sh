@@ -5,7 +5,7 @@
 # Usage: setup-vnet-host.sh [-d domain] [-p pool] [-v vdev] [-e ext_if] [-s subnet] [-g gateway]
 #
 # Options:
-#   -d DOMAIN      Domain suffix for jail hostnames (default: vnet.morante.com)
+#   -d DOMAIN      Domain suffix for jail hostnames (default: vnet.domain.tld)
 #   -p POOL        ZFS pool name (default: Storage)
 #   -v VDEV        ZFS vdev specification (default: da1)
 #   -e EXT_IF      External network interface (default: auto-detect)
@@ -22,7 +22,7 @@ if [ "$(id -u)" -ne 0 ]; then
 fi
 
 # Defaults
-DOMAIN="vnet.morante.com"
+DOMAIN="vnet.domain.tld"
 ZFS_POOL="Storage"
 ZFS_VDEV="da1"
 EXT_IF=""
