@@ -33,7 +33,7 @@ This skill sets up a vnet jail infrastructure on FreeBSD using ZFS. Each jail ge
 
 Before starting, ask the user for:
 
-1. **Domain suffix** for jail hostnames (e.g., `vnet.morante.com`)
+1. **Domain suffix** for jail hostnames (e.g., `vnet.domain.tld`)
 2. **ZFS device(s)** — a single device (e.g., `da1`) or mirror
 3. **ZFS pool name** — default: `Storage`
 4. **Bridge subnet** — default: `10.99.0.0/24`, gateway at `.254`
@@ -102,7 +102,7 @@ exec.consolelog = "/var/log/jail_console_${name}.log";
 exec.clean;
 mount.devfs;
 
-$domain = "vnet.morante.com";
+$domain = "vnet.domain.tld";
 host.hostname = "${name}.${domain}";
 path = "/Storage/Jails/${name}";
 
@@ -154,7 +154,7 @@ zfs create -o compression=lz4 ${ZFS_POOL}/Jails/${NAME}
 DESTDIR=/Storage/Jails/${NAME}
 
 # Fetch from local mirror (fast)
-fetch -o - "https://download.morante.org/releases/amd64/amd64/${FREEBSD_VERSION}-RELEASE/base.txz" \
+fetch -o - "https://download.freebsd.org/releases/amd64/amd64/${FREEBSD_VERSION}-RELEASE/base.txz" \
     | tar -xf - -C ${DESTDIR} --unlink
 ```
 
@@ -162,7 +162,7 @@ fetch -o - "https://download.morante.org/releases/amd64/amd64/${FREEBSD_VERSION}
 
 ```sh
 # rc.conf inside the jail
-sysrc -f ${DESTDIR}/etc/rc.conf hostname="${NAME}.vnet.morante.com"
+sysrc -f ${DESTDIR}/etc/rc.conf hostname="${NAME}.vnet.domain.tld"
 sysrc -f ${DESTDIR}/etc/rc.conf ifconfig_epair${JAIL_ID}b="inet ${JAIL_IP}/24"
 sysrc -f ${DESTDIR}/etc/rc.conf defaultrouter="${BRIDGE_GW}"
 
