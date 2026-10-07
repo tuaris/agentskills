@@ -53,7 +53,7 @@ Use a plain alias. Do NOT add `RemoteCommand` or `RequestTTY`:
 
 ```sshconfig
 Host freebsd-dev1
-    HostName freebsd-dev1.morante.com
+    HostName <ip-or-hostname>
     User admin
     IdentityFile <existing-private-key>
 ```
