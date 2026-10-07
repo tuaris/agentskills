@@ -163,6 +163,16 @@ ps -axww -o pid,ppid,stat,command | grep -E 'type=agentHost|copilot-runtime'
 
 ## Troubleshooting
 
+- **`SQLITE_READONLY_DBMOVED` / `sendMessage for unknown chat` / `Session history
+  cannot be recovered` in the Agents window**: leftover state from the old
+  nullfs/chroot setup. Linux processes under Linuxulator resolve a path in
+  `/compat/linux` first, so a stale `/compat/linux/home/<user>/.vscode-server`
+  or `.copilot` tree splits the same path across two filesystems, and deleting
+  it while the agent host runs leaves SQLite with moved files. Unmount any
+  nullfs mounts and remove those directories and their `/etc/fstab` entries,
+  then restart the agent host (`pkill -f 'type=agentHost'`; the server respawns
+  it) and start a new chat. Old chats are not recoverable.
+
 - **`Waiting for server log...` forever / `Unable to connect to remote agent
   host`**: a leftover `RemoteCommand` (Linuxulator chroot bash) in the local SSH
   config. It makes the bootstrap write to `/compat/linux/home/<user>` while
