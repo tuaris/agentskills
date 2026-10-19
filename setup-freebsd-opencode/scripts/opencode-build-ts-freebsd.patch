@@ -1,0 +1,15 @@
+diff --git a/packages/opencode/script/build.ts b/packages/opencode/script/build.ts
+index b713911..f35b5aa 100755
+--- a/packages/opencode/script/build.ts
++++ b/packages/opencode/script/build.ts
+@@ -111,6 +111,10 @@ const allTargets: {
+     arch: "x64",
+     avx2: false,
+   },
++  {
++    os: "freebsd",
++    arch: "x64",
++  },
+ ]
+ 
+ const targets = singleFlag

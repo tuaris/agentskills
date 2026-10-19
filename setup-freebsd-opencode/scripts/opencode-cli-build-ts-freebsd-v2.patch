@@ -1,0 +1,12 @@
+diff --git a/packages/cli/script/build.ts b/packages/cli/script/build.ts
+index 7f22183..a380c9b 100755
+--- a/packages/cli/script/build.ts
++++ b/packages/cli/script/build.ts
+@@ -49,6 +49,7 @@ const allTargets: {
+   { os: "win32", arch: "arm64" },
+   { os: "win32", arch: "x64" },
+   { os: "win32", arch: "x64", avx2: false },
++  { os: "freebsd", arch: "x64" },
+ ]
+ 
+ const targets =

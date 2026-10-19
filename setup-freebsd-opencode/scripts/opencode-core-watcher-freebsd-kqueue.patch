@@ -1,0 +1,12 @@
+diff --git a/packages/core/src/filesystem/watcher.ts b/packages/core/src/filesystem/watcher.ts
+index b5c438661d..c12e49b458 100644
+--- a/packages/core/src/filesystem/watcher.ts
++++ b/packages/core/src/filesystem/watcher.ts
+@@ -27,6 +27,7 @@ function getBackend() {
+   if (process.platform === "win32") return "windows"
+   if (process.platform === "darwin") return "fs-events"
+   if (process.platform === "linux") return "inotify"
++  if (process.platform === "freebsd") return "kqueue"
+ }
+ 
+ export const hasNativeBinding = () => !!watcher()

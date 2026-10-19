@@ -1,0 +1,13 @@
+diff --git a/packages/cli/src/heap.ts b/packages/cli/src/heap.ts
+index e6930d19e0..f781425cb0 100644
+--- a/packages/cli/src/heap.ts
++++ b/packages/cli/src/heap.ts
+@@ -4,7 +4,7 @@ import path from "node:path"
+ 
+ export const listen = Effect.gen(function* () {
+   const global = yield* Global.Service
+-  if (process.platform === "win32") return
++  if (process.platform === "win32" || process.platform === "freebsd") return
+   const signals = yield* Queue.dropping<void>(1)
+   yield* Effect.acquireRelease(
+     Effect.sync(() => {

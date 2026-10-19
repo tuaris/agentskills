@@ -1,0 +1,69 @@
+#!/bin/sh
+
+# PROVIDE: opencode_serve
+# REQUIRE: LOGIN NETWORKING
+# KEYWORD: shutdown
+#
+# Add these lines to /etc/rc.conf.local or /etc/rc.conf
+# to enable this service:
+#
+# opencode_serve_enable (bool):    Enable opencode remote server. (default=NO)
+# opencode_serve_user (str):       Unprivileged user the agent runs as. Never root.
+#                                  (default=admin)
+# opencode_serve_bin (str):        opencode binary.
+#                                  (default=/home/<user>/bin/opencode)
+# opencode_serve_hostname (str):   Listen host. Keep 127.0.0.1 for SSH-tunnel
+#                                  access; 0.0.0.0 exposes it on the LAN.
+#                                  (default=127.0.0.1)
+# opencode_serve_port (int):       Listen port. (default=4555)
+# opencode_serve_password (str):   If set, enables HTTP basic auth
+#                                  (username 'opencode'). Strongly advised when
+#                                  hostname is not 127.0.0.1. (default=empty)
+# opencode_serve_home (str):       Working directory of the server.
+#                                  (default=/home/<user>)
+
+. /etc/rc.subr
+
+name=opencode_serve
+rcvar=opencode_serve_enable
+
+load_rc_config $name
+
+# Optional out-of-rc.conf secrets (rc.conf is world-readable). Sourced before
+# the defaults below so opencode_serve_password can live here instead.
+# set -a auto-exports every VAR= line (e.g. provider API keys) into the
+# daemon's environment.
+_envfile="/usr/local/etc/opencode_serve.env"
+if [ -r "${_envfile}" ]; then
+	set -a
+	. "${_envfile}"
+	set +a
+fi
+
+: ${opencode_serve_enable:="NO"}
+: ${opencode_serve_user:="admin"}
+: ${opencode_serve_bin:="/home/${opencode_serve_user}/bin/opencode"}
+: ${opencode_serve_hostname:="127.0.0.1"}
+: ${opencode_serve_port:="4555"}
+: ${opencode_serve_password:=""}
+: ${opencode_serve_home:="/home/${opencode_serve_user}"}
+
+pidfile="/var/run/${name}.pid"
+logfile="/var/log/${name}/${name}.log"
+command=/usr/sbin/daemon
+command_args="-u ${opencode_serve_user} -p ${pidfile} -o ${logfile} -T ${name} ${opencode_serve_bin} serve --hostname ${opencode_serve_hostname} --port ${opencode_serve_port} --print-logs"
+procname="${opencode_serve_bin}"
+opencode_serve_chdir="${opencode_serve_home}"
+
+if [ -n "${opencode_serve_password}" ]; then
+	opencode_serve_env="OPENCODE_SERVER_PASSWORD=${opencode_serve_password}"
+fi
+
+start_precmd="${name}_precmd"
+
+opencode_serve_precmd()
+{
+	install -d -o ${opencode_serve_user} /var/log/${name}
+}
+
+run_rc_command "$1"
