@@ -1,6 +1,6 @@
 ---
 name: setup-freebsd-cline
-description: Sets up Cline Desktop (the standalone Cline app) for remote development against a FreeBSD host over SSH - the host passes the app's Linux platform probe via the vscode skill's extended uname shim, and the app's bundled Linux helper runs under the Linuxulator. Includes an idempotent host setup/update script
+description: Sets up Cline Desktop (the standalone Cline app) for remote development against a FreeBSD host over SSH - the host passes the app's Linux platform probe via the vscode skill's extended uname shim, and the helper runs natively (built from the open source CLI/Hub with Bun) or under the Linuxulator. Includes idempotent host setup and native build/update scripts
 ---
 
 # Set Up Cline Desktop Remote Access on a FreeBSD Host
@@ -49,6 +49,16 @@ agent's terminal commands run in the host's login shell (native FreeBSD -
 `pkg`, `doas`, `sysrc` all work). A Cline CLI already running on the same
 account is left untouched; the desktop's helper uses its own isolated hub.
 
+**Recommended: build the helper natively (Step 2).** The Linuxulator's path
+redirection between the native tree and `/compat/linux` causes problems for
+some file reads/writes by the Linux helper. The Cline CLI and Hub are open
+source (Apache-2.0, `github.com/cline/cline`, `apps/cli` + `apps/cline-hub`;
+CLI releases are tagged `cli-v<version>`), and they are compiled with Bun,
+which publishes official FreeBSD builds - so the helper can be built
+natively on the host, the same pattern as `setup-freebsd-zed-remote`. The
+Linuxulator path above remains a fully working fallback (and is still what
+the app does by default).
+
 ## Requirements
 
 - FreeBSD 14+ (64-bit) host with the Linuxulator enabled and
@@ -92,7 +102,53 @@ It is idempotent and safe to re-run; it does:
 Cline Desktop connect re-uploads it; `--host HOST --user USER` point the
 probe at a specific target (default: self-ssh as the current user).
 
-## Step 2: Add the host in Cline Desktop
+## Step 2: Build the native helper (on the FreeBSD host)
+
+Install `scripts/build-cline-remote-helper.sh` as `~/bin/build-cline-remote-helper`
+and run it:
+
+```sh
+~/bin/build-cline-remote-helper              # auto-detect version
+~/bin/build-cline-remote-helper 3.0.74       # pin an exact version (Zed-style)
+~/bin/build-cline-remote-helper -f           # force a rebuild
+```
+
+Version handling, both styles:
+
+- **Auto-detect (Devin-style, default):** reads the version from the helper
+  Cline Desktop has staged in `~/.cline/remote/` (the app uploads one on
+  connect), so the native build always tracks what the app ships. If no
+  helper is staged yet, it falls back to the newest `cli-v*` release tag on
+  GitHub (with a warning).
+- **Pin (Zed-style):** pass the exact CLI version to build.
+
+What it does (idempotent, safe to re-run):
+
+- resolves the version and checks whether that version is already staged as
+  a native binary (skips the build if so; `-f` forces a rebuild)
+- checks out `cli-v<version>` from `github.com/cline/cline` into
+  `~/Documents/Code/cline-cli` (or `CLINE_SRC_DIR` if the root filesystem is
+  tight; needs ~3 GB for source + node_modules)
+- applies three local-only patches to the build tree: adds `freebsd` to the
+  compile target matrix, installs deps with `--ignore-scripts` (grpc-tools,
+  an SDK dev dependency, has no FreeBSD build and none of its output is
+  needed), and swaps the webview's `@vitejs/plugin-react-swc` for the
+  babel-based `@vitejs/plugin-react` (`@swc/core` publishes no FreeBSD
+  bindings)
+- builds with the repo's own pipeline (`apps/cli/script/build.ts --single`),
+  which runs the repo's own native smoke tests: the binary must report the
+  exact version and pass a hub start/status/stop cycle in an isolated HOME
+- stages the result as `~/.cline/remote/cline-x86_64-unknown-linux-gnu`
+  (the exact name the app derives from the probed platform), keeping the
+  previous Linux helper as `cline-x86_64-unknown-linux-gnu.linux-elf`
+- runs a live `hub ensure` / `hub stop` with the app's exact launch command
+  and verifies the loopback endpoint answers
+
+Native prerequisites: `git`, `curl`, `bun` 1.4+ (native FreeBSD build), and
+the Step 1 prerequisites (`/bin/bash`, the uname shim - the app's probe
+still decides which helper filename to use, so the shim stays either way).
+
+## Step 3: Add the host in Cline Desktop
 
 1. Settings -> Remote -> add the host (name, host name, user, port; leave
    the identity file blank to let SSH choose, or point it at the key).
@@ -107,16 +163,23 @@ probe at a specific target (default: self-ssh as the current user).
 - On the host: `ps -axww -o pid,stat,command | grep cline-x86_64 | grep -v grep`
   shows the helper running a loopback hub, and
   `sockstat -l | grep 127.0.0.1` shows it bound to loopback only.
+- `file ~/.cline/remote/cline-x86_64-unknown-linux-gnu` shows "FreeBSD" for
+  the native build (or "Linux" for the app's default helper).
 - Have the agent run `echo ok && uname -s` - the command executes in the
   host's native login shell (FreeBSD).
 
 ## Updating
 
 - **Cline Desktop updated locally:** the helper is versioned with the app;
-  the next connect uploads and uses the new helper automatically (cached per
-  Cline version). If the connect fails afterwards, run
-  `setup-cline-remote-host.sh`, or `setup-cline-remote-host.sh
-  --refresh-helper` to force a re-upload on the next connect.
+  the next connect uploads and uses the official Linux helper automatically
+  (cached per Cline version) - this **overwrites a staged native helper**.
+  To restore the native build for the new version, run
+  `build-cline-remote-helper.sh` with no arguments (it auto-detects the
+  version from the freshly staged helper) or pin it explicitly.
+- **Native helper maintenance:** re-run `build-cline-remote-helper.sh`
+  (idempotent; skips the build when the version is already staged, `-f`
+  forces). Point `CLINE_SRC_DIR` at a roomier dataset if the build tree
+  grows too large for `/`.
 - **Host-side repairs** (reboot dropped the module, `/bin/bash` gone, shim
   overwritten): re-run `setup-cline-remote-host.sh`; it repairs in place and
   re-verifies the probe.
@@ -135,6 +198,13 @@ probe at a specific target (default: self-ssh as the current user).
   loaded (`kldstat | grep linux64`; script loads it). Check `dmesg` for
   `linux:` warnings; the usual ones (io_uring_setup, prctl, TIOCGPTPEER)
   are harmless.
+- **`Timed out after 15000ms waiting for detached hub startup`:** the hub
+  daemon died while starting; the actual error is at the end of
+  `~/.cline/data/logs/hub-daemon.log`. The app's exact launch command
+  (what `build-cline-remote-helper.sh` runs in its live check) reproduces
+  it. Common cause: a stale discovery record or lock in
+  `~/.cline/data/remote/` from a crashed run - remove the stale files and
+  retry.
 - **`Permission denied (publickey)` / `Host key verification failed`:**
   Cline cannot answer prompts; fix key auth and trust the host key from a
   terminal first (`ssh user@host`).
@@ -151,6 +221,12 @@ probe at a specific target (default: self-ssh as the current user).
 - The `/bin/bash` symlink points at the native bash port
   (`/usr/local/bin/bash`); upgrading or removing that port breaks the
   helper launch - re-run the script if you change it.
+- The native helper is built for the hub/remote path only: the interactive
+  `cline` TUI is not available in the native build (OpenTUI publishes no
+  FreeBSD native bindings), which does not affect Cline Desktop remote
+  sessions. The native binary reports `platform: freebsd` in its hub
+  response; the app does not validate that field (it only checks the
+  inspect probe), so this is harmless.
 - This skill does not touch the Devin (`~/.devin-server`), Zed
   (`~/.zed_server`), or OpenCode setups; it only extends the vscode skill's
   uname shim additively (backup kept) and adds `/bin/bash`.
