@@ -29,8 +29,8 @@ VS Code's remote extension host, so the FreeBSD host work splits in two:
   `^1.101.0`). Check with
   `jq -r .version ~/.vscode-server/bin/<commit>/product.json`
 - Local machine with VS Code + Remote - SSH configured per the vscode skill
-- `curl`, `jq`, `unzip` on the FreeBSD host (installed by the vscode skill or
-  its siblings)
+- `curl`, `jq`, `unzip`, `flock` on the FreeBSD host (installed by the vscode
+  skill or its siblings)
 
 ## Step 1: Local VS Code client
 
