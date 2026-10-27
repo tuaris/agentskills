@@ -281,8 +281,9 @@ SHIM
     chmod 755 "${SHIM}"
 }
 
-if [ -f "${SHIM}" ] && grep -q "${MARKER}" "${SHIM}"; then
-    ok "uname shim answers ${MARKER}"
+if [ -f "${SHIM}" ] && grep -q "${MARKER}" "${SHIM}" \
+    && grep -q 'echo Linux; exit 0' "${SHIM}"; then
+    ok "uname shim answers ${MARKER} (with the no-Linuxulator fallback)"
 else
     [ -f "${SHIM}" ] && cp -p "${SHIM}" "${SHIM}.bak-$(date +%Y%m%d)" 2>/dev/null || true
     install_shim
