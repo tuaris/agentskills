@@ -80,11 +80,13 @@ working fallback (and is still what the app does by default).
 ## Step 1: Run the single setup script (on the FreeBSD host)
 
 Install `scripts/setup-freebsd-cline-remote.sh` as
-`~/bin/setup-freebsd-cline-remote` and run it:
+`~/bin/setup-freebsd-cline-remote` and `scripts/update-cline.sh` as
+`~/bin/update-cline`, then run the setup script:
 
 ```sh
 mkdir -p ~/bin
 install -m 755 scripts/setup-freebsd-cline-remote.sh ~/bin/setup-freebsd-cline-remote
+install -m 755 scripts/update-cline.sh ~/bin/update-cline
 ~/bin/setup-freebsd-cline-remote          # auto-detect the version
 ~/bin/setup-freebsd-cline-remote 3.0.74   # pin an exact CLI version (Zed-style)
 ```
@@ -116,6 +118,11 @@ It does everything, idempotently, in one pass:
    the exact version and the ABI stamp, then the app's exact `hub ensure`
    launch command is run and the loopback hub must come up before it is
    stopped again.
+6. **Entry point** - re-points the `~/bin/cline` symlink (and any sibling
+   `~/bin/<name>` symlink that already aims into `~/.cline/remote`, or extra
+   paths in `CLINE_ENTRY_LINKS`) at the helper just staged, so `cline` is a
+   command on PATH like `~/bin/devin` is. It refuses to link a helper that is
+   not a FreeBSD ELF. See "The `cline` entry point" below.
 
 Flags: `-f/--force` rebuild, `--host`/`--user` for the probe target,
 `--abi N` to override the stamp, `--build-only` to stop after the build, and
@@ -135,6 +142,38 @@ A native binary dropped at
 `~/.cline/remote/cline-x86_64-unknown-linux-gnu` (the client-side lookup name)
 is **inert**: the app never executes that path. Earlier versions of this
 skill staged there and silently kept running the Linux helper.
+
+### The `cline` entry point
+
+The helper's filename embeds its own content hash
+(`cline-linux-x64-<sha256[0:16]>`), so **a symlink to it breaks whenever the
+app uploads a differently hashed helper**. Staging keeps the name, but a new
+Cline Desktop build produces a new name, and a `~/bin/cline` link would then
+dangle. Two things keep it working:
+
+- `setup-freebsd-cline-remote` re-points the link as its last step (job 6)
+  whenever it stages.
+- `~/bin/update-cline` does that one step alone - no rebuild, no re-stage,
+  seconds instead of minutes:
+
+```sh
+install -m 755 scripts/update-cline.sh ~/bin/update-cline
+~/bin/update-cline --dry-run   # show what it would link
+~/bin/update-cline             # re-point and verify through the link
+```
+
+`update-cline` prefers the app's hashed helper over the inert legacy
+`cline-x86_64-unknown-linux-gnu` name, never links a `*.linux-elf` backup or a
+half-written `*.new.*`, and **refuses to link a non-FreeBSD helper** (it exits
+1 and tells you to run the setup script) so an upstream Linux upload can never
+silently become the `cline` command. After relinking it runs `--version`
+*through the link* to prove it works.
+
+It deliberately does **not** run `cline update`. The CLI's self-updater would
+fetch an upstream build into the staged path and discard the native binary;
+moving to a new CLI version is the setup script's job. Set
+`CLINE_ENTRY_LINKS="/home/me/bin/cline /home/me/bin/cline-old"` to manage
+additional links; the plain `~/bin/cline` is always considered.
 
 ### About the ABI stamp
 
@@ -178,7 +217,10 @@ unnecessary - point `bun` at it and the note will already match.
   own Linux helper again, under a new hash name - that **replaces the native
   helper for the new version**. Re-run `setup-freebsd-cline-remote` with no
   arguments: it auto-detects the new version from the staged helper, rebuilds
-  if needed, re-stamps the ABI, and re-stages. Then disconnect/reconnect.
+  if needed, re-stamps the ABI, re-stages, and re-points `~/bin/cline`. Then
+  disconnect/reconnect.
+- **`cline` vanished from PATH after an update** (the new helper hash changed
+  the filename, so the old link dangles): `~/bin/update-cline`. No rebuild.
 - **ABI stamp after a host upgrade:** re-run with `-f` (or `--abi N`); the
   default stamp is always the host's current `kern.osreldate`.
 - **Rollback:** `--restore-linux` puts every `*.linux-elf` backup back and
@@ -221,6 +263,11 @@ unnecessary - point `bun` at it and the note will already match.
   terminal first (`ssh user@host`).
 - **Passphrase-protected key:** load it into the SSH agent on the desktop
   machine; Cline never asks for passphrases.
+- **`cline: not found`, or the command fails with "No such file or
+  directory" right after a Cline Desktop update:** the `~/bin/cline` symlink
+  still names the previous helper hash. Run `~/bin/update-cline` (or re-run
+  the setup script); confirm with `ls -l ~/bin/cline` and
+  `~/bin/update-cline --dry-run`.
 - **Model/egress problems:** the agent and MCP servers run on the host, so
   model traffic leaves from the FreeBSD host; test with
   `curl -sI https://<provider-host>`.
@@ -238,6 +285,14 @@ unnecessary - point `bun` at it and the note will already match.
   sessions. The native binary reports `platform: freebsd` in its hub
   response; the app does not validate that field (it only checks the
   inspect probe), so this is harmless.
+- The non-interactive CLI is usable from the entry point, though:
+  `cline --version`, `cline doctor`, `cline history` (lists real sessions) and
+  `cline hub status` (JSON, no flag needed) all work against the native binary
+  (verified on 3.0.74, FreeBSD 15.1). Commands that open an interactive
+  surface refuse without a TTY, e.g. `cline config` prints "interactive mode
+  requires a TTY (stdin/stdout must both be terminals)" and the `cline mcp
+  add` wizard is interactive too - that is the same OpenTUI gap, not a
+  staging failure.
 - The ABI stamp is metadata: `bun build --compile` embeds Bun's published
   FreeBSD runtime, and that runtime is linked on 14.3. Re-stamping the
   `NT_FREEBSD_ABI_TAG` note makes the artifact say "for FreeBSD 15.1" and

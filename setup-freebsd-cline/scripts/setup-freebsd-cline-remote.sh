@@ -3,7 +3,7 @@
 # setup-freebsd-cline-remote - Prepare a FreeBSD host for Cline Desktop's SSH
 # remote mode AND build/stage a native FreeBSD helper (skill: setup-freebsd-cline)
 #
-# One script, three jobs:
+# One script, four jobs:
 #   1. Host prerequisites: a uname shim that answers Cline's platform probe
 #      with Linux/x86_64, its non-interactive-SSH PATH hook, and /bin/bash.
 #   2. Native build: check out github.com/cline/cline at the CLI release tag
@@ -14,6 +14,11 @@
 #   3. Staging (the Zed-skill pattern): replace the helper the app actually
 #      executes - ~/.cline/remote/cline-linux-x64-<sha256:16> - with the
 #      native binary, atomically, keeping the Linux ELF as *.linux-elf.
+#   4. Entry points: re-point the ~/bin/cline symlink (and any sibling
+#      ~/bin/<name> symlink into ~/.cline/remote) at the helper just staged.
+#      The hash in the helper's name IS the helper's sha256, so it changes on
+#      every Cline Desktop update; without this step the command dangles after
+#      each update. `update-cline` is a thin wrapper that re-runs this step.
 #
 # Why staging by hash name matters: Cline Desktop resolves the helper on the
 # CLIENT (CLINE_REMOTE_HELPER_BINARY, CLINE_REMOTE_HELPER_DIRECTORY, or
@@ -65,6 +70,9 @@ MARKER=CLINE_REMOTE_INSPECT_V1
 BUILD_MARKER="$SRC/.native-built-version"
 DEPS_MARKER="$SRC/.native-deps-version"
 ABI_MARKER="$SRC/.native-abi-tag"
+# CLI entry points repointed at the staged helper (step 8). Space-separated
+# absolute paths; the regular ~/bin/cline link is always considered.
+ENTRY_LINKS="${CLINE_ENTRY_LINKS:-$HOME/bin/cline}"
 
 VERSION=""
 FORCE=0
@@ -542,6 +550,51 @@ if [ "${BUILD_ONLY}" -eq 0 ]; then
 fi
 
 # ---------------------------------------------------------------------------
+# 8. Entry points: re-point ~/bin/cline at the helper just staged
+# ---------------------------------------------------------------------------
+# The hash in the helper's filename is the helper's sha256, so it changes on
+# every Cline Desktop update. Any ~/bin/<name> symlink aimed at ~/.cline/remote
+# therefore dangles until it is repointed here. The app's hashed helper is the
+# preferred target: it is the path the app execs and the one this script
+# restages. `cline update` is deliberately not run against the staged helper -
+# it would overwrite the native build with an upstream Linux artifact.
+relink_entry_links() {
+    LINK_DIR="${HOME}/bin"
+    LINKS=""
+    for l in "${LINK_DIR}/cline" ${ENTRY_LINKS}; do
+        [ -L "${l}" ] || continue
+        case "$(readlink "${l}" 2>/dev/null)" in
+            "${REMOTE_DIR}"/*) ;;
+            *) continue ;;
+        esac
+        # The default link is also commonly listed in CLINE_ENTRY_LINKS.
+        case "${LINKS}" in
+            *"${l}
+"*) continue ;;
+        esac
+        LINKS="${LINKS}${l}
+"
+    done
+    [ -n "${LINKS}" ] || return 0
+
+    TARGET=$(printf '%s\n' ${HELPERS} | sed -n '1p')
+    [ -n "${TARGET}" ] || return 0
+    is_freebsd_elf "${TARGET}" || {
+        fail "refusing to link $(basename "${LINK_DIR}")/cline: $(basename "${TARGET}") is not a FreeBSD ELF"
+        return 0
+    }
+    warn_ver=$(helper_version "${TARGET}" 2>/dev/null || echo "?")
+    for l in ${LINKS}; do
+        ln -sfn "${TARGET}" "${l}"
+        ok "$(basename "${l}") -> $(basename "${TARGET}") (native ${warn_ver})"
+    done
+}
+
+if [ "${BUILD_ONLY}" -eq 0 ]; then
+    relink_entry_links
+fi
+
+# ---------------------------------------------------------------------------
 # Summary
 # ---------------------------------------------------------------------------
 echo ""
@@ -566,4 +619,6 @@ echo "The first command should list a helper running with no Linux interpreter,"
 echo "and 'file' should say 'for FreeBSD $(uname -r | cut -d- -f1)'."
 echo ""
 echo "After a Cline Desktop update (it uploads a freshly hashed Linux helper),"
-echo "re-run this script to re-stage the native build."
+echo "re-run this script to re-stage the native build. The ~/bin/cline link is"
+echo "re-pointed at the new helper name automatically; 'update-cline' does just"
+echo "that one step without rebuilding."
