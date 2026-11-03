@@ -173,6 +173,11 @@ the patch:
      to `windows`/`linux`/wasm only, missing `freebsd`. Add
      `target_os = "freebsd"` to both cfg gates (module declaration and the
      `pub use queue::{...}` re-export).
+   - `crates/languages/src/python.rs`: `PyreflyLspAdapter` defines its asset
+     constants only for macOS, Linux, and Windows. Add the FreeBSD implementation
+     with `AssetKind::TarGz` and `unknown-freebsd`, matching the existing Ruff
+     and Ty adapters. Pyrefly does not publish FreeBSD archives, so automatic
+     download is unavailable; use a system-installed `pyrefly` instead.
    - `crates/crashes/*`: `crash-handler`/`minidumper` don't support
      FreeBSD. Restructured into a `lib.rs` dispatcher with a `crashes_full`
      module (the original, unmodified code) for non-FreeBSD, and a
