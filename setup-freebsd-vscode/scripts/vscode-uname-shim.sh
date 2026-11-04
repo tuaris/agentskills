@@ -14,8 +14,9 @@
 #     a `Linux x86_64` answer (see ~/.local/bin/uname from setup-freebsd-zed-remote)
 #   * Cline Desktop's CLINE_REMOTE_INSPECT_V1 probe, which runs `sh -c` with a
 #     printf script embedding $(uname -s) and $(uname -m)
-# For those callers answer with the Linux uname, which runs natively through
-# the Linuxulator. Every other caller gets the real FreeBSD uname.
+# For those callers answer with the Linux uname (Linuxulator when available,
+# otherwise the same static answers). Every other caller gets the real
+# FreeBSD uname.
 #
 # Install as ~/.local/share/vscode-shim/uname (mode 755) and put that directory
 # first in PATH for non-interactive SSH sessions.
@@ -29,7 +30,14 @@ fi
 
 case "${parent_cmd}" in
     sh|*" -c uname -s"|*" -c uname -m"|*" -c uname -sm"|*CLINE_REMOTE_INSPECT_V1*)
-        [ -x /compat/linux/usr/bin/uname ] && exec /compat/linux/usr/bin/uname "$@"
+        if [ -x /compat/linux/usr/bin/uname ]; then
+            exec /compat/linux/usr/bin/uname "$@"
+        fi
+        case "$*" in
+            -s) echo Linux; exit 0 ;;
+            -m) echo x86_64; exit 0 ;;
+            -sm) echo "Linux x86_64"; exit 0 ;;
+        esac
         ;;
 esac
 
