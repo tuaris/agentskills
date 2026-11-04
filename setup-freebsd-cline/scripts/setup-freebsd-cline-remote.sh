@@ -3,7 +3,7 @@
 # setup-freebsd-cline-remote - Prepare a FreeBSD host for Cline Desktop's SSH
 # remote mode AND build/stage a native FreeBSD helper (skill: setup-freebsd-cline)
 #
-# One script, four jobs:
+# One script, five jobs:
 #   1. Host prerequisites: a uname shim that answers Cline's platform probe
 #      with Linux/x86_64, its non-interactive-SSH PATH hook, and /bin/bash.
 #   2. Native build: check out github.com/cline/cline at the CLI release tag
@@ -11,6 +11,12 @@
 #      Bun pipeline for bun-freebsd-x64, and re-stamp the ELF ABI tag to this
 #      host's __FreeBSD_version (Bun's published FreeBSD runtime is built on
 #      14.3, so an as-built artifact says "for FreeBSD 14.3" on a 15.1 host).
+#      The interactive TUI needs OpenTUI's native library, which is not
+#      published for FreeBSD: the script builds libopentui.so from the
+#      opentui release matching the CLI's pinned @opentui/core (two-line
+#      build.zig patch adds the freebsd zig targets), teaches the installed
+#      resolver about freebsd, and stages a local @opentui/core-freebsd-*
+#      package so `bun build --compile` embeds it like every other platform.
 #   3. Staging (the Zed-skill pattern): replace the helper the app actually
 #      executes - ~/.cline/remote/cline-linux-x64-<sha256:16> - with the
 #      native binary, atomically, keeping the Linux ELF as *.linux-elf.
@@ -19,6 +25,10 @@
 #      The hash in the helper's name IS the helper's sha256, so it changes on
 #      every Cline Desktop update; without this step the command dangles after
 #      each update. `update-cline` is a thin wrapper that re-runs this step.
+#   5. Verification: staged helpers must be FreeBSD ELFs reporting the exact
+#      version and ABI, the app's exact `hub ensure` launch command must
+#      bring the loopback hub up, and `cline -i` under a pty must not print
+#      opentui's "not supported" error.
 #
 # Why staging by hash name matters: Cline Desktop resolves the helper on the
 # CLIENT (CLINE_REMOTE_HELPER_BINARY, CLINE_REMOTE_HELPER_DIRECTORY, or
@@ -49,10 +59,23 @@
 #     --restore-linux    Put the saved Linux helpers back (*.linux-elf) and exit.
 #     VERSION            Exact CLI version to build (default: auto-detect).
 #
-# Requirements: git, curl, perl, bun 1.4+ (native FreeBSD build), ~3 GB free
-# for the source tree + node_modules. CLINE_SRC_DIR overrides the checkout
-# location (default ~/Documents/Code/cline-cli). Keep it on a roomy dataset:
+# Requirements: git, curl, perl, python3, bun 1.4+ (native FreeBSD build),
+# zig (version must match the opentui tag's SUPPORTED_ZIG_VERSIONS, checked
+# at runtime), ~3 GB free for the source tree + node_modules plus ~1 GB for
+# the opentui checkout. CLINE_SRC_DIR overrides the checkout location
+# (default ~/Documents/Code/cline-cli). Keep it on a roomy dataset:
 # freebsd-dev1's / runs close to full, so do not override it onto / or /tmp.
+# CLINE_FREEBSD_CACHE overrides where opentui is checked out and built
+# (default ~/.cache/cline-freebsd). If zig or the OpenTUI build is missing
+# the script still builds/stages the helper - the hub path works without
+# OpenTUI; only the interactive TUI needs it.
+#
+# The helper scripts must sit next to this one (install all of scripts/):
+#   opentui-build-zig-freebsd.patch        freebsd zig targets, opentui 0.4.x
+#   opentui-native-build-zig-freebsd-v05.patch   same, opentui 0.5.x+ layout
+#   patch-opentui-core-resolver.py         teaches the installed @opentui/core
+#                                          resolver about freebsd packages
+#   make-opentui-freebsd-package.sh        stages @opentui/core-freebsd-<arch>
 #
 # Idempotent. Re-run it after every Cline Desktop update: the app uploads a
 # freshly hashed Linux helper, and this script re-stages the native build
@@ -70,9 +93,20 @@ MARKER=CLINE_REMOTE_INSPECT_V1
 BUILD_MARKER="$SRC/.native-built-version"
 DEPS_MARKER="$SRC/.native-deps-version"
 ABI_MARKER="$SRC/.native-abi-tag"
+OTUI_MARKER="$SRC/.native-opentui-version"
+SCRIPT_DIR=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
+OPENTUI_CACHE="${CLINE_FREEBSD_CACHE:-$HOME/.cache/cline-freebsd}"
+OPENTUI_REPO="https://github.com/anomalyco/opentui.git"
+DEPS_JUST_INSTALLED=0
 # CLI entry points repointed at the staged helper (step 8). Space-separated
 # absolute paths; the regular ~/bin/cline link is always considered.
 ENTRY_LINKS="${CLINE_ENTRY_LINKS:-$HOME/bin/cline}"
+# Host arch in the vocabulary npm platform packages use.
+case "$(uname -m)" in
+    amd64|x86_64) OTUI_ARCH=x64 ;;
+    aarch64|arm64) OTUI_ARCH=arm64 ;;
+    *) OTUI_ARCH="" ;;
+esac
 
 VERSION=""
 FORCE=0
@@ -372,6 +406,16 @@ if [ "${FORCE}" -eq 0 ] && [ -n "${HELPERS}" ] \
     && [ "$(cat "${BUILD_MARKER}" 2>/dev/null)" = "${VERSION}" ] \
     && [ "$(cat "${ABI_MARKER}" 2>/dev/null)" = "${ABI_TAG}" ]; then
     ALL_OK=1
+    # Helpers built before OpenTUI support carried no .native-opentui-version
+    # marker; force one rebuild so the staged binary gets the TUI. The marker
+    # ends in the npm arch ("0.4.3-x64", or "none-x64" when OpenTUI could not
+    # be built - install zig and rerun with -f to retry).
+    if [ -n "${OTUI_ARCH}" ]; then
+        case "$(cat "${OTUI_MARKER}" 2>/dev/null)" in
+            *-"${OTUI_ARCH}") ;;
+            *) ALL_OK=0 ;;
+        esac
+    fi
     OLDIFS=$IFS
     IFS='
 '
@@ -450,7 +494,112 @@ else
             die "bun install failed"
     fi
     echo "${VERSION}" > "${DEPS_MARKER}"
+    DEPS_JUST_INSTALLED=1
     ok "dependencies installed"
+fi
+
+# ---------------------------------------------------------------------------
+# 4a. OpenTUI native library (interactive TUI)
+# ---------------------------------------------------------------------------
+# @opentui/core resolves a per-platform native package; none is published
+# for FreeBSD, so the stock resolver throws "opentui is not supported on the
+# current platform: freebsd-x64" as soon as the TUI loads. Build
+# libopentui.so from the opentui tag matching the pinned @opentui/core
+# (the two-line build.zig patch adds the freebsd zig targets), patch the
+# installed resolver to look up @opentui/core-freebsd-<arch>, and stage that
+# package in node_modules so `bun build --compile` embeds it like the
+# platforms OpenTUI ships. Failure here is not fatal: the hub path Cline
+# Desktop's remote mode uses never loads OpenTUI.
+echo "OpenTUI (interactive TUI):"
+OTUI_READY=0
+OTUI_VER=$(sed -n 's/.*"@opentui\/core": *"[^0-9"]*\([0-9][0-9.]*\)".*/\1/p' \
+    "${SRC}/apps/cli/package.json" | head -1)
+OTUI_PKG_DIR="${SRC}/node_modules/@opentui/core-freebsd-${OTUI_ARCH}"
+
+if [ -z "${OTUI_VER}" ]; then
+    echo "  note: apps/cli does not pin @opentui/core; skipping"
+elif [ -z "${OTUI_ARCH}" ]; then
+    echo "  note: unhandled arch $(uname -m); the TUI will stay unsupported"
+elif [ "${DEPS_JUST_INSTALLED}" -eq 0 ] \
+    && [ "$(cat "${OTUI_MARKER}" 2>/dev/null)" = "${OTUI_VER}-${OTUI_ARCH}" ] \
+    && [ -f "${OTUI_PKG_DIR}/libopentui.so" ] \
+    && grep -rq "core-freebsd-${OTUI_ARCH}" \
+        "${SRC}"/node_modules/.bun/@opentui+core@*/node_modules/@opentui/core/*.js 2>/dev/null; then
+    ok "@opentui/core ${OTUI_VER}: freebsd ${OTUI_ARCH} library already staged"
+    OTUI_READY=1
+elif ! command -v zig >/dev/null 2>&1; then
+    echo "  note: zig not found; the TUI will stay unsupported (install the"
+    echo "        zig release pinned in opentui v${OTUI_VER}'s build.zig)"
+elif ! command -v python3 >/dev/null 2>&1; then
+    echo "  note: python3 not found; needed to patch the installed resolver"
+else
+    OTUI_SRC="${OPENTUI_CACHE}/opentui-v${OTUI_VER}"
+    if [ ! -d "${OTUI_SRC}/.git" ]; then
+        echo "  cloning opentui v${OTUI_VER} ..."
+        rm -rf "${OTUI_SRC}"
+        mkdir -p "${OPENTUI_CACHE}"
+        git clone --depth 1 --branch "v${OTUI_VER}" "${OPENTUI_REPO}" "${OTUI_SRC}" ||
+            echo "  note: opentui clone failed; the TUI will stay unsupported"
+    fi
+    OTUI_ZIG_DIR=""
+    OTUI_PATCH=""
+    if [ -d "${OTUI_SRC}/.git" ]; then
+        # opentui moved its native code between releases: 0.4.x keeps it in
+        # packages/core/src/zig, 0.5.x+ in packages/native (vendored zig deps).
+        if [ -f "${OTUI_SRC}/packages/core/src/zig/build.zig" ]; then
+            OTUI_ZIG_DIR="${OTUI_SRC}/packages/core/src/zig"
+            OTUI_PATCH="${SCRIPT_DIR}/opentui-build-zig-freebsd.patch"
+        elif [ -f "${OTUI_SRC}/packages/native/build.zig" ]; then
+            OTUI_ZIG_DIR="${OTUI_SRC}/packages/native"
+            OTUI_PATCH="${SCRIPT_DIR}/opentui-native-build-zig-freebsd-v05.patch"
+        fi
+    fi
+    if [ -z "${OTUI_ZIG_DIR}" ]; then
+        echo "  note: no build.zig found in ${OTUI_SRC}; unknown opentui layout"
+    else
+        OTUI_ZIG_WANT=$(sed -n 's/.*minor = \([0-9]*\), .*patch = \([0-9]*\).*/0.\1.\2/p' \
+            "${OTUI_ZIG_DIR}/build.zig" | head -1)
+        OTUI_ZIG_HAVE=$(zig version 2>/dev/null || echo "?")
+        [ "${OTUI_ZIG_HAVE}" = "${OTUI_ZIG_WANT}" ] ||
+            echo "  note: zig ${OTUI_ZIG_HAVE} vs pinned ${OTUI_ZIG_WANT}; build may fail"
+        if ! grep -q 'freebsd' "${OTUI_ZIG_DIR}/build.zig"; then
+            git -C "${OTUI_SRC}" apply "${OTUI_PATCH}" ||
+                echo "  note: could not apply ${OTUI_PATCH##*/}"
+        fi
+        grep -q 'freebsd' "${OTUI_ZIG_DIR}/build.zig" || OTUI_ZIG_DIR=""
+    fi
+    OTUI_SO=""
+    if [ -n "${OTUI_ZIG_DIR}" ]; then
+        if [ -f "${OTUI_SRC}/packages/native/scripts/prepare-zig-deps.sh" ]; then
+            (cd "${OTUI_SRC}/packages/native" && sh scripts/prepare-zig-deps.sh) ||
+                echo "  note: prepare-zig-deps.sh failed"
+        fi
+        echo "  zig build -Doptimize=ReleaseFast (${OTUI_ZIG_DIR##*/opentui/}) ..."
+        (cd "${OTUI_ZIG_DIR}" && zig build -Doptimize=ReleaseFast) ||
+            echo "  note: zig build failed; the TUI will stay unsupported"
+        # Prefer the canonical lib/<target>/ output over .zig-cache copies.
+        OTUI_SO=$(find "${OTUI_ZIG_DIR}/lib" -name 'libopentui.so' 2>/dev/null | head -1)
+        [ -n "${OTUI_SO}" ] ||
+            OTUI_SO=$(find "${OTUI_ZIG_DIR}" -name 'libopentui.so' -path '*freebsd*' 2>/dev/null | head -1)
+    fi
+    if [ -n "${OTUI_SO}" ]; then
+        python3 "${SCRIPT_DIR}/patch-opentui-core-resolver.py" "${SRC}" "${OTUI_ARCH}" &&
+            sh "${SCRIPT_DIR}/make-opentui-freebsd-package.sh" \
+                "${SRC}" "${OTUI_SO}" "${OTUI_VER}" "${OTUI_ARCH}" &&
+            echo "${OTUI_VER}-${OTUI_ARCH}" > "${OTUI_MARKER}" &&
+            OTUI_READY=1
+        if [ "${OTUI_READY}" -eq 1 ]; then
+            ok "staged @opentui/core-freebsd-${OTUI_ARCH} (${OTUI_SO##*/lib/})"
+        else
+            echo "  note: OpenTUI staging failed; the TUI will stay unsupported"
+        fi
+    fi
+fi
+# Record the outcome so the staged-helper skip check knows this build's TUI
+# state; "<ver>-<arch>" success, "none-<arch>" means OpenTUI could not be
+# built this run (install zig / fix the noted step and re-run with -f).
+if [ "${OTUI_READY}" -eq 0 ] && [ -n "${OTUI_ARCH}" ]; then
+    echo "${OTUI_VER:-none}-${OTUI_ARCH}" > "${OTUI_MARKER}" 2>/dev/null || true
 fi
 
 echo "Build:"
@@ -547,6 +696,24 @@ if [ "${BUILD_ONLY}" -eq 0 ]; then
     "${FIRST_STAGED}" hub stop --discovery-path "${DISC}" >/dev/null 2>&1
     rm -rf "${DISC}" "${DISC}.json" "${DISC}".instance.lock*
     ok "hub stopped"
+
+    # Interactive TUI: the resolver's failure is instant and prints the
+    # "not supported" line, while a working OpenTUI draws a full-screen UI
+    # and keeps running until killed. Run under a pty for a few seconds and
+    # fail only on the known signature.
+    if command -v script >/dev/null 2>&1 && command -v timeout >/dev/null 2>&1; then
+        echo "TUI check (cline -i under a pty):"
+        TUI_OUT=$(env TERM=xterm-256color CLINE_NO_AUTO_UPDATE=1 \
+            timeout 12 script -q /dev/null "${FIRST_STAGED}" -i 2>&1 || true)
+        case "${TUI_OUT}" in
+            *"not supported on the current platform"*)
+                fail "cline -i still reports opentui unsupported on freebsd" ;;
+            "") echo "  note: no output from cline -i (timeout); check manually" ;;
+            *) ok "cline -i runs (opentui loaded, no platform error)" ;;
+        esac
+    else
+        echo "  note: script(1)/timeout(1) unavailable; TUI check skipped"
+    fi
 fi
 
 # ---------------------------------------------------------------------------

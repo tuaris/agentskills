@@ -1,6 +1,6 @@
 ---
 name: setup-freebsd-cline
-description: Sets up Cline Desktop (the standalone Cline app) for remote development against a FreeBSD host over SSH with one idempotent script - it extends the vscode skill's uname shim so the app's platform probe passes, builds the open-source CLI/Hub natively with Bun, re-stamps the ELF ABI tag to the host's __FreeBSD_version, and stages the native binary over the helper the app actually executes (the Zed-skill pattern). The Linuxulator remains a fallback
+description: Sets up Cline Desktop (the standalone Cline app) for remote development against a FreeBSD host over SSH with one idempotent script - it extends the vscode skill's uname shim so the app's platform probe passes, builds the open-source CLI/Hub natively with Bun (including the interactive TUI, by building OpenTUI's libopentui.so from source and staging a local @opentui/core-freebsd-* package), re-stamps the ELF ABI tag to the host's __FreeBSD_version, and stages the native binary over the helper the app actually executes (the Zed-skill pattern). The Linuxulator remains a fallback
 ---
 
 # Set Up Cline Desktop Remote Access on a FreeBSD Host
@@ -72,21 +72,30 @@ working fallback (and is still what the app does by default).
 - Key-based SSH login that needs no prompts, with the host key already
   trusted (Cline runs ssh with `BatchMode=yes StrictHostKeyChecking=yes` and
   can never answer a prompt)
-- For the native build: `git`, `curl`, `perl`, and **bun 1.4+ (native
-  FreeBSD build)**, plus ~3 GB of free space for the source tree and
+- For the native build: `git`, `curl`, `perl`, `python3`, and **bun 1.4+
+  (native FreeBSD build)**, plus ~3 GB of free space for the source tree and
   `node_modules` (keep it on a roomy dataset; `/` on freebsd-dev1 is tight)
+- For the interactive TUI (`cline -i`): **zig** matching the opentui tag's
+  `SUPPORTED_ZIG_VERSIONS` (0.4.x pins 0.15.2 = `pkg zig015`; newer lines may
+  pin a newer release - the script prints the mismatch), plus ~1 GB for the
+  opentui checkout under `CLINE_FREEBSD_CACHE` (default
+  `~/.cache/cline-freebsd`). Without zig the script still builds/stages the
+  helper - only the TUI is skipped.
 - Cline Desktop on the local machine (macOS, Windows, or Linux)
 
 ## Step 1: Run the single setup script (on the FreeBSD host)
 
 Install `scripts/setup-freebsd-cline-remote.sh` as
-`~/bin/setup-freebsd-cline-remote` and `scripts/update-cline.sh` as
-`~/bin/update-cline`, then run the setup script:
+`~/bin/setup-freebsd-cline-remote`, `scripts/update-cline.sh` as
+`~/bin/update-cline`, and the OpenTUI helper files next to them (the script
+finds them via its own directory), then run the setup script:
 
 ```sh
 mkdir -p ~/bin
 install -m 755 scripts/setup-freebsd-cline-remote.sh ~/bin/setup-freebsd-cline-remote
 install -m 755 scripts/update-cline.sh ~/bin/update-cline
+install -m 755 scripts/patch-opentui-core-resolver.py scripts/make-opentui-freebsd-package.sh ~/bin/
+install -m 644 scripts/opentui-build-zig-freebsd.patch scripts/opentui-native-build-zig-freebsd-v05.patch ~/bin/
 ~/bin/setup-freebsd-cline-remote          # auto-detect the version
 ~/bin/setup-freebsd-cline-remote 3.0.74   # pin an exact CLI version (Zed-style)
 ```
@@ -103,22 +112,42 @@ It does everything, idempotently, in one pass:
    Cline Desktop staged in `~/.cline/remote/`, falling back to the newest
    `cli-v*` tag on GitHub), checks out `github.com/cline/cline` at that tag
    into `~/Documents/Code/cline-cli` (override with `CLINE_SRC_DIR`), applies
-   the three local-only build patches, and builds with the repo's own
+   the local-only build patches, and builds with the repo's own
    pipeline (`apps/cli/script/build.ts --single`, target
    `bun-freebsd-x64`), which also runs the repo's native smoke tests.
-3. **ABI fix** - re-stamps `NT_FREEBSD_ABI_TAG` in the built ELF from Bun's
+3. **OpenTUI (interactive TUI)** - the CLI's TUI engine,
+   `@opentui/core`, dlopens a per-platform package
+   (`@opentui/core-<os>-<arch>`) that is not published for FreeBSD, so a
+   stock build dies with `opentui is not supported on the current platform:
+   freebsd-x64` the moment the TUI loads. The script reads the pinned
+   `@opentui/core` version from `apps/cli/package.json`, clones
+   `github.com/anomalyco/opentui` at the matching tag into
+   `~/.cache/cline-freebsd/opentui-v<ver>`, applies the two-line patch that
+   registers the freebsd zig targets, builds `libopentui.so` with
+   `zig build -Doptimize=ReleaseFast`, teaches the installed resolver about
+   the freebsd package (`patch-opentui-core-resolver.py`), and stages
+   `node_modules/@opentui/core-freebsd-<arch>`
+   (`make-opentui-freebsd-package.sh`) in the exact layout OpenTUI's own
+   publish tooling emits - so `bun build --compile` embeds the `.so` into the
+   single-file binary just like the shipped platforms. If zig is missing or
+   the build fails, the script prints a note and continues: the hub path
+   Cline Desktop uses never loads OpenTUI. Re-run with `-f` after installing
+   zig to get the TUI.
+4. **ABI fix** - re-stamps `NT_FREEBSD_ABI_TAG` in the built ELF from Bun's
    14.3 toolchain value to the host's `kern.osreldate` (1501000 on 15.1), so
    `file` reports "for FreeBSD 15.1" and the artifact matches the system it
    was built and runs on. See "About the ABI stamp" below.
-4. **Staging (the Zed-skill pattern)** - replaces the helper the app actually
+5. **Staging (the Zed-skill pattern)** - replaces the helper the app actually
    executes, `~/.cline/remote/cline-linux-x64-<sha256:16>`, with the native
    binary (atomic rename, so a running helper is never truncated), keeping
    the app's Linux ELF as `*.linux-elf`.
-5. **Verification** - every staged helper must be a FreeBSD ELF reporting
+6. **Verification** - every staged helper must be a FreeBSD ELF reporting
    the exact version and the ABI stamp, then the app's exact `hub ensure`
    launch command is run and the loopback hub must come up before it is
-   stopped again.
-6. **Entry point** - re-points the `~/bin/cline` symlink (and any sibling
+   stopped again. `cline -i` is then run under a pty for a few seconds:
+   the opentui "not supported" signature fails the check, while a working
+   OpenTUI draws the full-screen UI and simply stays up until killed.
+7. **Entry point** - re-points the `~/bin/cline` symlink (and any sibling
    `~/bin/<name>` symlink that already aims into `~/.cline/remote`, or extra
    paths in `CLINE_ENTRY_LINKS`) at the helper just staged, so `cline` is a
    command on PATH like `~/bin/devin` is. It refuses to link a helper that is
@@ -271,6 +300,89 @@ unnecessary - point `bun` at it and the note will already match.
 - **Model/egress problems:** the agent and MCP servers run on the host, so
   model traffic leaves from the FreeBSD host; test with
   `curl -sI https://<provider-host>`.
+- **`cline -i` still prints `opentui is not supported on the current
+  platform: freebsd-x64`:** the OpenTUI step did not complete - look for
+  its `note:` line in the script output (missing zig/python3, a failed
+  clone or zig build, a `SUPPORTED_ZIG_VERSIONS` mismatch). Fix the cause
+  and re-run with `-f`. If a manual `bun install` wiped `node_modules`
+  after the build, the same message returns: re-run the script, which
+  re-patches the resolver and re-stages the package.
+- **zig build fails inside `opentui-v<ver>`:** the opentui tag pins exact
+  zig versions in `SUPPORTED_ZIG_VERSIONS`; the script prints want vs have.
+  Install the pinned release (`pkg zig015` for 0.15.x pins, or the official
+  ziglang.org FreeBSD tarball for anything else) and re-run `-f`.
+
+## How the OpenTUI pieces fit together
+
+- `patch-opentui-core-resolver.py` edits the installed `@opentui/core`
+  chunks in place: adds a `freebsd` import branch ahead of the
+  "not supported" throw for the host arch, matching the surrounding return
+  style, and adds `freebsd: "libopentui.so"` to `NATIVE_FILE_NAMES` where
+  that table exists (0.4.5+ layouts). It handles both known installed
+  layouts (0.4.3's single `index-*.js` chunk; 0.4.5/0.5.x `chunk-*` +
+  `node-assets.js`). Idempotent; re-run after every `bun install`.
+- `make-opentui-freebsd-package.sh` writes
+  `node_modules/@opentui/core-freebsd-<arch>` byte-for-byte in the layout
+  OpenTUI's own `scripts/build.ts` emits for other platforms
+  (`index.bun.js` imports the `.so` `with: { type: "file" }` so Bun embeds
+  it; `index.js` exports its `import.meta.url` path for Node).
+- `opentui-build-zig-freebsd.patch` / `opentui-native-build-zig-freebsd-v05.patch`
+  add `x86_64-freebsd`/`aarch64-freebsd` to `SUPPORTED_TARGETS` in
+  `packages/core/src/zig/build.zig` (0.4.x) or `packages/native/build.zig`
+  (0.5.x+). The script picks by which file exists.
+- The opencode skill (`setup-freebsd-opencode`) uses earlier copies of the
+  same machinery; this skill's resolver patcher is the generalized version.
+
+## Upstream path (PR-ready)
+
+Everything above mirrors what upstream needs, so the local work splits into
+two small, additive upstream diffs - prepared and verified on real branches.
+
+**Existing upstream work (checked 2026-11-04):** opentui already has three
+open FreeBSD PRs. #1565 ("core: add FreeBSD (x86_64, aarch64) support",
+samm-git) covers the same source files as the branch below plus a needed
+test fix (`node-assets.test.ts` used `freebsd` as its
+unsupported-platform example) but misses the CI/release pieces
+(`build-native.yml`, `release.yml`, `native-symbols.ts`) that actually
+publish the packages - the `freebsd-support` branch here is a strict
+superset and folds that test fix in. #1445 is a three-file subset;
+#1121 is stale since July and touches unrelated files. #1676 was closed.
+The maintainer-friendly move is to review #1565 and offer the missing
+CI half rather than open a fourth duplicate; the branch here is ready if
+a standalone PR is wanted anyway. On cline/cline there is no FreeBSD
+build-matrix work - `freebsd-cli-support` is unique.
+
+1. **anomalyco/opentui** (`freebsd-support` @ `~/Documents/Workspaces/opentui-freebsd`,
+   based on `origin/main`): adds `x86_64-freebsd`/`aarch64-freebsd` to
+   `packages/native/build.zig`'s `SUPPORTED_TARGETS`; `freebsd` variants in
+   `packages/core/scripts/variants.ts`; `freebsd` +
+   `libopentui.so` in `packages/core/src/node-asset-target.ts`
+   (`NodeAssetTarget` union + `NATIVE_FILE_NAMES`); a freebsd branch in
+   `packages/core/src/platform/runtime-assets.bun.ts`;
+   `@opentui/core-freebsd-{x64,arm64}` optionalDependencies in
+   `packages/core/package.json`; `freebsd` folded into the ELF path of
+   `scripts/native-symbols.ts` (FreeBSD shares readelf/objcopy/nm); and the
+   two new artifact names through `build-native.yml`/`release.yml`
+   (packaging blocks, npm-package list, verify lists, symbol targets,
+   `EXPECTED_ASSETS` 20 -> 24). CI needs nothing new: the macOS build host
+   already cross-compiles every zig target. Verified:
+   `zig build -Dtarget=x86_64-freebsd -Doptimize=ReleaseFast` produces
+   `lib/x86_64-freebsd/{libopentui.so,libopentui.a}` on upstream main
+   (zig 0.17.0, its pinned version). Existing platforms are untouched -
+   every change is an additive table entry or a new branch.
+2. **cline/cline** (`freebsd-cli-support` @ `~/Documents/Workspaces/cline-freebsd`,
+   based on `origin/main`): adds `freebsd-x64`/`freebsd-arm64` to
+   `apps/cli/script/build.ts`'s `allTargets` and the publish workflow's
+   `EXPECTED` package list, and makes the webview vite config pick
+   `@vitejs/plugin-react` (babel) only when `process.platform === "freebsd"`
+   (`@swc/core` ships no FreeBSD binding; other platforms keep swc).
+   Landing order matters: this is only fully useful once an opentui release
+   publishes `@opentui/core-freebsd-*`, because `Bun.build` must resolve the
+   platform package at compile time - until then the hub/remote path works
+   but the TUI needs the local staging this skill does. Two dev-machine
+   caveats to document in the PR rather than code around: FreeBSD
+   contributors run `bun install --ignore-scripts` (grpc-tools dev-dep has
+   no FreeBSD build), and interactive `cline -i` needs a real TTY.
 
 ## Caveats
 
@@ -279,19 +391,21 @@ unnecessary - point `bun` at it and the note will already match.
 - The `/bin/bash` symlink points at the native bash port
   (`/usr/local/bin/bash`); upgrading or removing that port breaks the
   helper launch - re-run the script if you change it.
-- The native helper is built for the hub/remote path only: the interactive
-  `cline` TUI is not available in the native build (OpenTUI publishes no
-  FreeBSD native bindings), which does not affect Cline Desktop remote
-  sessions. The native binary reports `platform: freebsd` in its hub
-  response; the app does not validate that field (it only checks the
-  inspect probe), so this is harmless.
-- The non-interactive CLI is usable from the entry point, though:
+- The interactive `cline` TUI works in the native build once the script has
+  staged its `libopentui.so` (step 3; verified on 3.0.74 + @opentui/core
+  0.4.3, FreeBSD 15.1). Without zig the build still stages the helper but
+  `cline -i` keeps printing `opentui is not supported on the current
+  platform: freebsd-x64` - install zig and re-run with `-f`. The native
+  binary reports `platform: freebsd` in its hub response; the app does not
+  validate that field (it only checks the inspect probe), so this is
+  harmless either way.
+- The non-interactive CLI is usable from the entry point:
   `cline --version`, `cline doctor`, `cline history` (lists real sessions) and
   `cline hub status` (JSON, no flag needed) all work against the native binary
   (verified on 3.0.74, FreeBSD 15.1). Commands that open an interactive
-  surface refuse without a TTY, e.g. `cline config` prints "interactive mode
-  requires a TTY (stdin/stdout must both be terminals)" and the `cline mcp
-  add` wizard is interactive too - that is the same OpenTUI gap, not a
+  surface still refuse without a TTY, e.g. `cline config` prints "interactive
+  mode requires a TTY (stdin/stdout must both be terminals)" and the `cline
+  mcp add` wizard is interactive too - that is a TTY requirement, not a
   staging failure.
 - The ABI stamp is metadata: `bun build --compile` embeds Bun's published
   FreeBSD runtime, and that runtime is linked on 14.3. Re-stamping the
