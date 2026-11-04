@@ -143,9 +143,10 @@ The script uses the VS Code update API
 for the exact URL, version and SHA-256, installs into
 `~/.vscode-server/bin/<commit>/`, links
 `~/.vscode-server/cli/servers/Stable-<commit>/server` when that placeholder
-exists, writes remote telemetry-off settings (only if absent), and patches the
-extension host's `navigator` migration guard (backup kept as
-`.bak-navigator`).
+exists, seeds `~/.vscode-server/code-<commit>` with the musl (alpine) CLI
+binary the agent host bootstrap needs when it is missing, writes remote
+telemetry-off settings (only if absent), and patches the extension host's
+`navigator` migration guard (backup kept as `.bak-navigator`).
 
 Workflow after installing or upgrading the VS Code client:
 

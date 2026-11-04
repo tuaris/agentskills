@@ -15,6 +15,9 @@
 #   * This script detects that <commit>, asks the VS Code update API for the
 #     exact download URL, version and SHA-256, installs the server, applies the
 #     remote settings and extension host patch, then you reconnect.
+#   * It also seeds ~/.vscode-server/code-<commit>, the CLI binary that runs
+#     `agent host`, with the musl (alpine) build the bootstrap itself would
+#     install, when it is missing.
 #
 # Usage:
 #   update-vscode-server [-f] [COMMIT]
@@ -35,6 +38,7 @@ SERVER_APP_NAME="code-server"
 
 PLATFORM="linux"
 ARCH="x64"
+CLI_PLATFORM="alpine"
 QUALITY="stable"
 API="https://update.code.visualstudio.com"
 
@@ -64,6 +68,10 @@ done
 
 is_installed() {
     [ -x "${SERVER_BIN_DIR}/$1/bin/${SERVER_APP_NAME}" ]
+}
+
+cli_installed() {
+    [ -x "${SERVER_DATA_DIR}/code-$1" ]
 }
 
 # Auto-detect the target commit. A failed connection leaves a placeholder
@@ -101,9 +109,13 @@ if [ -z "${COMMIT}" ]; then
         COMMIT="${INSTALLED}"
         echo "Auto-detected installed commit for reinstall: ${COMMIT}"
     elif [ -n "${INSTALLED}" ]; then
-        echo "VS Code server already installed: ${SERVER_BIN_DIR}/${INSTALLED}"
-        echo "Nothing to do. Use -f to force a reinstall, or pass a commit."
-        exit 0
+        if cli_installed "${INSTALLED}"; then
+            echo "VS Code server already installed: ${SERVER_BIN_DIR}/${INSTALLED}"
+            echo "Nothing to do. Use -f to force a reinstall, or pass a commit."
+            exit 0
+        fi
+        COMMIT="${INSTALLED}"
+        echo "Auto-detected installed commit missing the CLI: ${COMMIT}"
     fi
 fi
 
@@ -141,57 +153,113 @@ echo "  Commit:          ${COMMIT}"
 echo "  Download:        ${DOWNLOAD_URL}"
 
 INSTALL_DIR="${SERVER_BIN_DIR}/${COMMIT}"
+SERVER_SCRIPT="${INSTALL_DIR}/bin/${SERVER_APP_NAME}"
+CLI_PATH="${SERVER_DATA_DIR}/code-${COMMIT}"
 
-if is_installed "${COMMIT}" && [ "${FORCE}" -ne 1 ]; then
+NEED_SERVER=1
+NEED_CLI=1
+is_installed "${COMMIT}" && [ "${FORCE}" -ne 1 ] && NEED_SERVER=0
+cli_installed "${COMMIT}" && [ "${FORCE}" -ne 1 ] && NEED_CLI=0
+
+if [ "${NEED_SERVER}" -eq 0 ] && [ "${NEED_CLI}" -eq 0 ]; then
     echo ""
     echo "Already installed at ${INSTALL_DIR}"
     echo "Use -f to force a reinstall."
     exit 0
 fi
 
-mkdir -p "${INSTALL_DIR}"
+if [ "${NEED_SERVER}" -eq 1 ]; then
+    mkdir -p "${INSTALL_DIR}"
 
-echo ""
-echo "Downloading ${PLATFORM}-${ARCH} server ..."
-TARBALL="${INSTALL_DIR}/vscode-server.tar.gz"
-curl -L -f --retry 3 --connect-timeout 10 -o "${TARBALL}" "${DOWNLOAD_URL}" || {
-    echo "ERROR: download failed" >&2
-    rm -f "${TARBALL}"
-    exit 1
-}
-
-if [ -n "${EXPECTED_SHA256}" ] && [ "${EXPECTED_SHA256}" != "null" ]; then
-    echo "Verifying SHA-256 checksum..."
-    if command -v sha256 >/dev/null 2>&1; then
-        ACTUAL_SHA256=$(sha256 -q "${TARBALL}")
-    else
-        ACTUAL_SHA256=$(sha256sum "${TARBALL}" | awk '{print $1}')
-    fi
-    if [ "${ACTUAL_SHA256}" != "${EXPECTED_SHA256}" ]; then
-        echo "ERROR: checksum mismatch!" >&2
-        echo "  Expected: ${EXPECTED_SHA256}" >&2
-        echo "  Actual:   ${ACTUAL_SHA256}" >&2
+    echo ""
+    echo "Downloading ${PLATFORM}-${ARCH} server ..."
+    TARBALL="${INSTALL_DIR}/vscode-server.tar.gz"
+    curl -L -f --retry 3 --connect-timeout 10 -o "${TARBALL}" "${DOWNLOAD_URL}" || {
+        echo "ERROR: download failed" >&2
         rm -f "${TARBALL}"
         exit 1
+    }
+
+    if [ -n "${EXPECTED_SHA256}" ] && [ "${EXPECTED_SHA256}" != "null" ]; then
+        echo "Verifying SHA-256 checksum..."
+        if command -v sha256 >/dev/null 2>&1; then
+            ACTUAL_SHA256=$(sha256 -q "${TARBALL}")
+        else
+            ACTUAL_SHA256=$(sha256sum "${TARBALL}" | awk '{print $1}')
+        fi
+        if [ "${ACTUAL_SHA256}" != "${EXPECTED_SHA256}" ]; then
+            echo "ERROR: checksum mismatch!" >&2
+            echo "  Expected: ${EXPECTED_SHA256}" >&2
+            echo "  Actual:   ${ACTUAL_SHA256}" >&2
+            rm -f "${TARBALL}"
+            exit 1
+        fi
+        echo "  Checksum OK"
+    else
+        echo "WARNING: no checksum in version info; skipping verification."
     fi
-    echo "  Checksum OK"
-else
-    echo "WARNING: no checksum in version info; skipping verification."
-fi
 
-echo "Extracting into ${INSTALL_DIR} ..."
-tar -xzf "${TARBALL}" --strip-components=1 -C "${INSTALL_DIR}"
-rm -f "${TARBALL}"
+    echo "Extracting into ${INSTALL_DIR} ..."
+    tar -xzf "${TARBALL}" --strip-components=1 -C "${INSTALL_DIR}"
+    rm -f "${TARBALL}"
 
-SERVER_SCRIPT="${INSTALL_DIR}/bin/${SERVER_APP_NAME}"
-if [ ! -x "${SERVER_SCRIPT}" ]; then
-    echo "ERROR: server binary missing after extraction: ${SERVER_SCRIPT}" >&2
-    exit 1
+    if [ ! -x "${SERVER_SCRIPT}" ]; then
+        echo "ERROR: server binary missing after extraction: ${SERVER_SCRIPT}" >&2
+        exit 1
+    fi
 fi
 
 # Newer clients look for the server under cli/servers/Stable-<commit>/server.
 if [ -d "${CLI_SERVERS_DIR}/Stable-${COMMIT}" ] && [ ! -e "${CLI_SERVERS_DIR}/Stable-${COMMIT}/server" ]; then
     ln -s "${INSTALL_DIR}" "${CLI_SERVERS_DIR}/Stable-${COMMIT}/server"
+fi
+
+# Seed the vscode CLI used by the agent host bootstrap. The bootstrap normally
+# drops code-<commit> itself, but a stalled install can leave it missing. The
+# musl (alpine) build is what the bootstrap selects here because the host ldd
+# cannot prove glibc.
+if [ "${NEED_CLI}" -eq 1 ]; then
+    echo ""
+    echo "Fetching vscode CLI info (cli-${CLI_PLATFORM}-${ARCH}) ..."
+    CLI_JSON=$(curl -sf "${API}/api/versions/commit:${COMMIT}/cli-${CLI_PLATFORM}-${ARCH}/${QUALITY}") || {
+        echo "ERROR: failed to fetch CLI version info" >&2
+        exit 1
+    }
+    CLI_DOWNLOAD_URL=$(echo "${CLI_JSON}" | jq -r '.url')
+    CLI_SHA256=$(echo "${CLI_JSON}" | jq -r '.sha256hash')
+    if [ -z "${CLI_DOWNLOAD_URL}" ] || [ "${CLI_DOWNLOAD_URL}" = "null" ]; then
+        echo "ERROR: CLI version info did not contain a download URL." >&2
+        exit 1
+    fi
+
+    CLI_TMP="${SERVER_DATA_DIR}/.cli-install-${COMMIT}"
+    mkdir -p "${CLI_TMP}"
+    echo "Downloading vscode CLI ..."
+    curl -L -f --retry 3 --connect-timeout 10 -o "${CLI_TMP}/vscode-cli.tar.gz" "${CLI_DOWNLOAD_URL}" || {
+        echo "ERROR: CLI download failed" >&2
+        rm -rf "${CLI_TMP}"
+        exit 1
+    }
+    if [ -n "${CLI_SHA256}" ] && [ "${CLI_SHA256}" != "null" ]; then
+        echo "Verifying SHA-256 checksum..."
+        if command -v sha256 >/dev/null 2>&1; then
+            ACTUAL_SHA256=$(sha256 -q "${CLI_TMP}/vscode-cli.tar.gz")
+        else
+            ACTUAL_SHA256=$(sha256sum "${CLI_TMP}/vscode-cli.tar.gz" | awk '{print $1}')
+        fi
+        if [ "${ACTUAL_SHA256}" != "${CLI_SHA256}" ]; then
+            echo "ERROR: CLI checksum mismatch!" >&2
+            echo "  Expected: ${CLI_SHA256}" >&2
+            echo "  Actual:   ${ACTUAL_SHA256}" >&2
+            rm -rf "${CLI_TMP}"
+            exit 1
+        fi
+        echo "  Checksum OK"
+    fi
+    tar -xzf "${CLI_TMP}/vscode-cli.tar.gz" -C "${CLI_TMP}"
+    install -m 755 "${CLI_TMP}/code" "${CLI_PATH}"
+    rm -rf "${CLI_TMP}"
+    echo "Installed ${CLI_PATH}"
 fi
 
 # Remote telemetry settings: extension hosts exit with code 7 when Copilot
@@ -225,6 +293,9 @@ done
 echo ""
 echo "Verifying installation..."
 "${SERVER_SCRIPT}" --version || true
+if [ -x "${CLI_PATH}" ]; then
+    "${CLI_PATH}" --version || true
+fi
 
 echo ""
 echo "VS Code server ${PRODUCT_VERSION} (${COMMIT})"
