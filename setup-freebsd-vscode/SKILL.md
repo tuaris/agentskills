@@ -197,3 +197,14 @@ ps -axww -o pid,ppid,stat,command | grep -E 'type=agentHost|copilot-runtime'
 - **Linuxulator warnings in dmesg** (`syscall io_uring_setup not implemented`,
   unsupported prctl/ioctl): usually harmless; investigate only if they coincide
   with a failure.
+- **Generic `Failed to connect to <host>` after a client upgrade, everything
+  else checks out** (shim verification passes, `bin/<commit>` server installs,
+  `code-server --start-server` runs by hand): a stale `agent host` supervisor
+  from a previous session is still registered in
+  `~/.config/Code/agent-host/local-endpoint/entries/` and hijacks the new
+  `code-<commit> agent host` launch via supervisor reuse (token/config
+  mismatch). Diagnose with `~/.vscode-server/code-<commit> agent ps`: a
+  `standalone (pid N)` entry reporting `No active sessions` that survives
+  across failed connects is the culprit. Clear it with
+  `~/.vscode-server/code-<commit> agent kill` (or kill the pid and remove the
+  stale entry file), then reconnect.
