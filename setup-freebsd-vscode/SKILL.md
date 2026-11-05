@@ -151,8 +151,8 @@ telemetry-off settings (only if absent), and patches the extension host's
 Workflow after installing or upgrading the VS Code client:
 
 1. Click Connect in VS Code (it fails and leaves a placeholder directory).
-2. On the host run `update-vscode-server` (`-f` to reinstall, or pass a commit
-   from Help > About).
+2. On the host run `update-vscode-server` (`--latest` for the current stable
+   release, `-f` to reinstall, or pass a commit from Help > About).
 3. Reconnect.
 
 ## 7. Verify

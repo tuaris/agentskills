@@ -20,8 +20,11 @@
 #     install, when it is missing.
 #
 # Usage:
-#   update-vscode-server [-f] [COMMIT]
-#     -f, --force   Reinstall even if the server is already present.
+#   update-vscode-server [-f|--force] [-l|--latest] [COMMIT]
+#     -f, --force   Reinstall even if the server and CLI are already present.
+#     -l, --latest  Target the current stable release, resolved from the
+#                   update API. The positional word 'latest' does the same.
+#                   Useful right after a VS Code upgrade.
 #     COMMIT        Target commit hash. If omitted, it is auto-detected from the
 #                   placeholder directory left by a failed connection attempt.
 #                   It is also shown in the client under Help > About.
@@ -43,6 +46,7 @@ QUALITY="stable"
 API="https://update.code.visualstudio.com"
 
 FORCE=0
+LATEST=0
 COMMIT=""
 
 usage() {
@@ -52,6 +56,7 @@ usage() {
 while [ $# -gt 0 ]; do
     case "$1" in
         -f|--force) FORCE=1 ;;
+        -l|--latest) LATEST=1 ;;
         -h|--help)  usage; exit 0 ;;
         -*)         echo "ERROR: unknown option: $1" >&2; exit 2 ;;
         *)          COMMIT="$1" ;;
@@ -65,6 +70,30 @@ for tool in curl jq perl tar; do
         exit 1
     }
 done
+
+# Resolve the current stable release when asked. The releases API returns
+# product versions (1.145.0); the versions API maps a version to its release
+# commit.
+if [ "${LATEST}" -eq 1 ] || [ "${COMMIT}" = "latest" ]; then
+    echo "Resolving latest stable release ..."
+    LATEST_VER=$(curl -sf "${API}/api/releases/${QUALITY}" | jq -r '.[0]') || {
+        echo "ERROR: failed to query releases API" >&2
+        exit 1
+    }
+    [ -n "${LATEST_VER}" ] && [ "${LATEST_VER}" != "null" ] || {
+        echo "ERROR: releases API returned no version" >&2
+        exit 1
+    }
+    if [ -n "${COMMIT}" ] && [ "${COMMIT}" != "latest" ]; then
+        echo "WARNING: --latest overrides positional commit ${COMMIT}" >&2
+    fi
+    COMMIT=$(curl -sf "${API}/api/versions/${LATEST_VER}/server-${PLATFORM}-${ARCH}/${QUALITY}" | jq -r '.version') || true
+    [ -n "${COMMIT}" ] && [ "${COMMIT}" != "null" ] || {
+        echo "ERROR: versions API returned no commit for ${LATEST_VER}" >&2
+        exit 1
+    }
+    echo "  Latest stable: ${LATEST_VER} (${COMMIT})"
+fi
 
 is_installed() {
     [ -x "${SERVER_BIN_DIR}/$1/bin/${SERVER_APP_NAME}" ]
