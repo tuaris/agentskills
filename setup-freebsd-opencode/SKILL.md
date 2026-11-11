@@ -305,6 +305,65 @@ TUI works this way.
 3. The official installer also works if run under the Linuxulator shell, which
    spoofs `uname -s` as Linux: `/compat/linux/bin/bash -c 'curl -fsSL https://opencode.ai/install | bash'` (lands in `~/.opencode/bin`).
 
+## FreeBSD port (misc/opencode)
+
+An official port exists: `misc/opencode`, maintained by samm@FreeBSD.org
+(added 2026-10-19; v2.2.5 as of 2026-11-11, upstream already at v2.2.7).
+It builds the same native `bun --compile` binary from source and installs
+`/usr/local/bin/opencode` plus `/usr/local/lib/opencode/watcher.node`.
+Packages are on official `latest` (14/15/16, amd64 + aarch64); not on
+quarterly until the next branch, and not in the estate's PortsPlus repo.
+
+What the port builds that this skill's pipeline skips:
+
+- **fff fuzzy finder** as a native Rust cdylib (no Linuxulator needed).
+- **opencode-pty** terminal daemon (Rust + ghostty VT) embedded via
+  `OPENCODE_PTY_BIN`, so persistent terminals work on FreeBSD; our build
+  auto-skips pty embedding.
+- **@parcel/watcher** kqueue addon compiled from source with node-gyp.
+- Web UI WASM fallbacks (lightningcss/rolldown) and aarch64 support.
+- Offline bun/zig caches warmed at fetch time (poudriere-friendly).
+- hier(7) system config dir `/usr/local/etc/opencode` (upstream PR #58347).
+
+Patch overlap: build.ts freebsd target, opentui zig targets, resolver
+wiring (`setup-opentui-freebsd.py` matches our resolver patcher + platform
+package script), watcher-binding literal require. Gaps and differences,
+verified 2026-11-11 against the port's files/ and pristine v2.2.5/v2.2.7:
+
+1. **No SIGUSR1 heap guard.** Upstream `heap.ts` still registers the JS
+   SIGUSR1 listener on FreeBSD (the JSC suspend collision, Path A2). The
+   port builds against `lang/bun` (source build, samm-git WebKit fork with
+   FreeBSD fixes); whether that avoids the collision is UNVERIFIED. Test
+   a port binary for the 60-120s post-startup hang before trusting it.
+2. **No effect dev-fold patch.** The ZFS dev_t RangeError fix has no port
+   equivalent; directory browsing on ZFS may 500. The port's "fix chdir
+   on ZFS" commit is the hier(7) config-dir patch, not this.
+3. **Watcher strategy differs.** The port found Bun 1.4.x segfaults/hangs
+   when parcel's kqueue subscription delivers events through N-API
+   thread-safe functions, and Bun's fs.watch misses missing entries on
+   FreeBSD. It uses the addon snapshot API (writeSnapshot/getEventsSince,
+   250ms tick) for directories and a 100ms JS poller for file/entry
+   watches. Our kqueue-backend patch uses the subscription path: stable
+   in production so far, but treat watcher crashes as this known Bun
+   issue and consider the snapshot approach if they appear.
+
+Coexistence: the port installs `/usr/local/bin/opencode`; this skill
+installs `~/bin/opencode` -> `~/.local/share/opencode-freebsd/<ver>`.
+PATH order decides interactive use; `opencode_serve.rc` and the CLI
+background service pin explicit paths. Do not mix managers on one host:
+never run `opencode upgrade` against a pkg-managed binary, and a pkg
+install does not touch the versioned installs. The port ships no rc
+script; `opencode_serve.rc` works with either binary.
+
+**Recommendation (2026-11-11):** keep the self-update pipeline as primary
+(immediate upstream tags, all FreeBSD fixes carried). Re-evaluate the port
+once it matches our version and gaps 1-2 are resolved upstream or in the
+port. Estate adoption: merge upstream into deluxe (last merge 2026-10-12
+predates the port), then plus overlay + poudriere; `lang/bun` is a heavy
+source build (LLVM, pinned rust-nightly, WebKit prebuilt). Alternative:
+borrow the pty/fff build steps into this pipeline for persistent
+terminals sooner.
+
 ## Run as a remote server (boot service)
 
 OpenCode's Desktop app (and `opencode attach`) connect to a server started with
@@ -415,6 +474,9 @@ BUN=~/.local/bin/bun ZIG=/usr/local/bin/zig0152 \
   2. opencode PR: `freebsd` entry in `allTargets` once opentui ships FreeBSD.
   3. Bun-on-FreeBSD port / `fff-bun` native FreeBSD build (Rust, so just a
      cargo target) to make the fuzzy finder native too.
+  Status 2026-11-11: `lang/bun` and `misc/opencode` are in the ports tree
+  (see above); candidates 1-2 are still unmerged upstream.
 - **Known limitation:** the fuzzy file finder (fff) binary bundled is Linux
   and relies on the Linuxulator being loaded; without it the feature degrades
   gracefully rather than breaking the TUI.
+  The misc/opencode port builds fff natively and does not have this limitation.
