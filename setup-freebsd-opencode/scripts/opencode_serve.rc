@@ -21,6 +21,12 @@
 #                                  hostname is not 127.0.0.1. (default=empty)
 # opencode_serve_home (str):       Working directory of the server.
 #                                  (default=/home/<user>)
+#
+# Persistent terminals: on stop the script prepares a PTY handoff (ticket in
+# /var/run/opencode_serve.pty-handoff, 0600, ~120s expiry) and injects it via
+# OPENCODE_PTY_HANDOFF on the next start, so terminals survive restarts.
+# Needs curl and python3; without them, or if the ticket expires, terminals
+# start fresh.
 
 . /etc/rc.subr
 
@@ -50,6 +56,12 @@ fi
 
 pidfile="/var/run/${name}.pid"
 logfile="/var/log/${name}/${name}.log"
+_handoff_file="/var/run/${name}.pty-handoff"
+# service(8) runs with a base-only PATH; python3/curl live in /usr/local/bin.
+_python3=$(command -v python3 2>/dev/null || true)
+[ -x "${_python3}" ] || _python3=/usr/local/bin/python3
+_curl=$(command -v curl 2>/dev/null || true)
+[ -x "${_curl}" ] || _curl=/usr/local/bin/curl
 command=/usr/sbin/daemon
 command_args="-u ${opencode_serve_user} -p ${pidfile} -o ${logfile} -T ${name} ${opencode_serve_bin} serve --hostname ${opencode_serve_hostname} --port ${opencode_serve_port} --print-logs"
 procname="${opencode_serve_bin}"
@@ -60,10 +72,59 @@ if [ -n "${opencode_serve_password}" ]; then
 fi
 
 start_precmd="${name}_precmd"
+stop_precmd="${name}_stop_precmd"
 
 opencode_serve_precmd()
 {
 	install -d -o ${opencode_serve_user} /var/log/${name}
+	# Consume a prepared PTY handoff (one-shot; expires ~120s after stop).
+	if [ -s "${_handoff_file}" ] && [ -x "${_python3}" ]; then
+		_handoff=$("${_python3}" -c '
+import json,sys,time
+try:
+    h=json.load(open(sys.argv[1]))
+    if h.get("expiresAt",0) > time.time()*1000:
+        print(json.dumps(h))
+except Exception:
+    pass
+' "${_handoff_file}" 2>/dev/null)
+		rm -f "${_handoff_file}"
+		if [ -n "${_handoff}" ]; then
+			export OPENCODE_PTY_HANDOFF="${_handoff}"
+		fi
+	fi
+}
+
+opencode_serve_stop_precmd()
+{
+	# Without a prepared handoff the pty daemon stops as soon as the server
+	# disconnects; prepare one so persistent terminals survive the restart.
+	rm -f "${_handoff_file}"
+	[ -x "${_python3}" ] || return 0
+	[ -x "${_curl}" ] || return 0
+	[ -n "${opencode_serve_password}" ] || return 0
+	_url="http://127.0.0.1:${opencode_serve_port}/api/experimental/persistent-pty/handoff"
+	_origin="http://127.0.0.1:${opencode_serve_port}"
+	_resp=$("${_curl}" -sS --max-time 10 -u "opencode:${opencode_serve_password}" \
+		-H "Origin: ${_origin}" -X POST "${_url}" 2>/dev/null) || _resp=""
+	case "${_resp}" in
+		*'"handoff"'*) ;;
+		*) sleep 1
+		   _resp=$("${_curl}" -sS --max-time 10 -u "opencode:${opencode_serve_password}" \
+			-H "Origin: ${_origin}" -X POST "${_url}" 2>/dev/null) || _resp="" ;;
+	esac
+	printf '%s' "${_resp}" | "${_python3}" -c '
+import json,sys,time
+try:
+    h=json.load(sys.stdin).get("handoff")
+    if h and h.get("expiresAt",0) > time.time()*1000:
+        print(json.dumps(h))
+except Exception:
+    pass
+' > "${_handoff_file}" 2>/dev/null
+	chmod 600 "${_handoff_file}" 2>/dev/null
+	[ -s "${_handoff_file}" ] || rm -f "${_handoff_file}"
+	return 0
 }
 
 run_rc_command "$1"

@@ -252,14 +252,62 @@ that matter for manual rebuilds:
    to a `#opentui/runtime-assets` module, but the published npm package
    keeps the `chunk-bun-*.js` / `chunk-node-*.js` / `node-assets.js` layout,
    so `patch-opentui-core-resolver.py` applies unchanged.
-6. **PTY embedding** auto-skips FreeBSD and falls back to `opencode-pty` on
-   PATH.
+6. **PTY embedding** is optional and on by default (`WITH_PTY=1`): the
+   opencode-pty daemon is built from source and embedded; see "Persistent
+   terminals and native fff" below. `WITH_PTY=0` keeps the old behavior.
 7. **Disk space:** the all-platform `bun install` is multi-GB. The script
    exports `BUN_INSTALL_CACHE_DIR` and `TMPDIR` under `$SRC_DIR` so a small
    root filesystem cannot ENOSPC mid-install. Check `df -h /` first anyway.
 8. bun install warns about upstream `patches/*.patch` entries whose
    dependencies were removed or upgraded (e.g. `@ai-sdk/mistral`,
    `gcp-metadata`); harmless, unrelated to our patches.
+
+## Persistent terminals and native fff (v2.2.x)
+
+Borrowed from FreeBSD ports misc/opencode (samm@FreeBSD.org) and verified
+on 2026-11-11 with v2.2.7. The self-update script builds and embeds two
+native extras by default:
+
+- **opencode-pty** (`WITH_PTY=1`): the persistent terminal daemon (Rust +
+  ghostty VT, built with zig 0.16 via `PT_ZIG`, default `zig016`). Embedded
+  through `OPENCODE_PTY_BIN`; the CLI build's platform gate is patched to
+  accept freebsd. Ghostty is fetched as a pinned tarball (the revision in
+  `packages/process-daemon/ghostty-revision`), patched for zig 0.16, and
+  its zig dependency cache is warmed once per revision under `$SRC_DIR`.
+- **fff** (`WITH_FFF=1`): the fuzzy finder as a native `libfff_c.so`
+  (cargo, `--package fff-c`), wired into `@ff-labs/fff-bun` by
+  `setup-fff-freebsd.py`. No Linuxulator needed. fff's release profile uses
+  fat LTO with one codegen unit: the first build is slow (~25 min on a
+  Xeon E5-2620 v4), cached afterwards in `$SRC_DIR/cargo-target`.
+
+Both need cargo; without it they are skipped with a warning and the binary
+works as before. Post-build checks grep the executable for `libghostty`
+and `crates/fff-c/src` to prove embedding.
+
+**Daemon protocol compatibility:** the tag's `process-daemon` source can be
+ahead of the tag's JS client (v2.2.7 ships daemon protocol 8 with a
+protocol-7 client; upstream embeds prebuilt daemons on other platforms).
+The script detects the mismatch and builds the newest daemon revision whose
+`PROTOCOL_VERSION` matches the client (`git archive` into
+`$SRC_DIR/pty-src-<ver>`). A mismatched daemon is rejected at runtime with
+"opencode-pty protocol mismatch".
+
+**Restart persistence (rc service):** the pty daemon stops as soon as its
+owner disconnects unless a handoff was prepared (upstream design; the
+desktop/CLI managed flows do this). `opencode_serve.rc` now does the same:
+
+- stop: POST `/api/experimental/persistent-pty/handoff` (with an Origin
+  header; one retry) and save the ticket to
+  `/var/run/opencode_serve.pty-handoff` (0600, ~120s expiry).
+- start: consume the ticket and export `OPENCODE_PTY_HANDOFF` so the new
+  server reclaims the waiting daemon and its terminals.
+
+The hook resolves python3/curl with `/usr/local/bin` fallbacks because
+service(8) runs with a base-only PATH. Handoff is best-effort: if it fails
+(the endpoint showed transient 301s during some startup windows), the
+restart still works and terminals start fresh. Verified: a terminal with
+scrollback survives `service opencode_serve restart`; qwen4-max-preview
+run, TUI and the external endpoint stayed green after the rebuild.
 
 ## Model catalog refresh (v2.2.x)
 
@@ -314,13 +362,11 @@ It builds the same native `bun --compile` binary from source and installs
 Packages are on official `latest` (14/15/16, amd64 + aarch64); not on
 quarterly until the next branch, and not in the estate's PortsPlus repo.
 
-What the port builds that this skill's pipeline skips:
+What the port builds beyond this skill's pipeline (fff and opencode-pty
+were borrowed into it on 2026-11-11, see below):
 
-- **fff fuzzy finder** as a native Rust cdylib (no Linuxulator needed).
-- **opencode-pty** terminal daemon (Rust + ghostty VT) embedded via
-  `OPENCODE_PTY_BIN`, so persistent terminals work on FreeBSD; our build
-  auto-skips pty embedding.
-- **@parcel/watcher** kqueue addon compiled from source with node-gyp.
+- **@parcel/watcher** kqueue addon compiled from source with node-gyp
+  (we stage the prebuilt freebsd package from npm instead).
 - Web UI WASM fallbacks (lightningcss/rolldown) and aarch64 support.
 - Offline bun/zig caches warmed at fetch time (poudriere-friendly).
 - hier(7) system config dir `/usr/local/etc/opencode` (upstream PR #58347).
@@ -418,6 +464,10 @@ server in `setup-freebsd-zed-remote`).
 | `patch-opentui-core-resolver.py` | Post-install resolver patch: teach `@opentui/core` about FreeBSD |
 | `make-opentui-freebsd-package.sh` | Stage `@opentui/core-freebsd-x64` with our `libopentui.so` |
 | `patch-effect-fs-dev-fold.py` | Post-install: fold 64-bit stat dev (Effect RangeError fix) |
+| `opencode-pty-build-rs-freebsd.patch` | opencode-pty build.rs: accept vendored ghostty tree (from misc/opencode) |
+| `opencode-pty-script-freebsd.patch` | CLI build: embed opencode-pty on freebsd (from misc/opencode) |
+| `ghostty-zig-0.16-std.patch` | ghostty: trimRight/trimLeft renames for zig 0.16 (from misc/opencode) |
+| `setup-fff-freebsd.py` | Wire native libfff_c.so into @ff-labs/fff-bun (from misc/opencode) |
 
 ## Self-update (both lines)
 
@@ -444,6 +494,9 @@ BUN=~/.local/bin/bun ZIG=/usr/local/bin/zig0152 \
   not rely on the unversioned path).
 - Tag discovery globs `v2.*` with `sort -V`; tag fetches use `--force` because
   upstream occasionally rewrites tags (a rejected update aborts `set -e`).
+- `WITH_PTY`/`WITH_FFF` (default 1) build and embed the opencode-pty daemon
+  and native fff; they need cargo and are skipped with a warning without it.
+  `PT_ZIG` selects the zig 0.16 binary for the ghostty VT build.
 - Set `SERVICE_NAME=opencode_serve` and the script also handles daemons
   holding the old binary: stops the service, kills leftover processes (the
   text lock defeats plain cp), swaps the binary atomically, and starts it
@@ -476,7 +529,7 @@ BUN=~/.local/bin/bun ZIG=/usr/local/bin/zig0152 \
      cargo target) to make the fuzzy finder native too.
   Status 2026-11-11: `lang/bun` and `misc/opencode` are in the ports tree
   (see above); candidates 1-2 are still unmerged upstream.
-- **Known limitation:** the fuzzy file finder (fff) binary bundled is Linux
-  and relies on the Linuxulator being loaded; without it the feature degrades
-  gracefully rather than breaking the TUI.
-  The misc/opencode port builds fff natively and does not have this limitation.
+- **fff fuzzy finder:** built natively by default (`WITH_FFF=1`, needs
+  cargo). With `WITH_FFF=0` or no cargo, the bundled Linux binary is used
+  and relies on the Linuxulator; without it the feature degrades gracefully
+  rather than breaking the TUI.

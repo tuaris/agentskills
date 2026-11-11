@@ -16,6 +16,8 @@
 #   - v2: kqueue watcher backend in watcher.ts
 #   - effect stat dev fold (64-bit dev_t, @effect/platform-node-shared)
 #   - @opentui/core resolver chunks + @opentui/core-freebsd-x64 platform package
+#   - v2 optional: embedded opencode-pty daemon (persistent terminals) and
+#     native fff finder, borrowed from FreeBSD ports misc/opencode
 #
 # Usage:
 #   opencode-freebsd-selfupdate.sh [--version vX.Y.Z] [--dry-run]
@@ -32,6 +34,10 @@
 #   SERVICE_NAME     if set, stop/replace/start this rc.d service around the install
 #                    (handles wedged/stale processes holding the old binary)
 #   SKIP_VERIFY      if set, skip the --version smoke test
+#   WITH_PTY         1 (default): build+embed the opencode-pty daemon for
+#                    persistent terminals (v2; needs cargo, zig 0.16 via PT_ZIG)
+#   WITH_FFF         1 (default): build+embed the native fff finder (v2; needs cargo)
+#   PT_ZIG           zig 0.16 binary for the ghostty VT build (default: zig016)
 set -eu
 
 DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
@@ -54,6 +60,9 @@ LINK=${LINK-$HOME/bin/opencode}
 BUN=${BUN:-$(command -v bun || true)}
 ZIG=${ZIG:-$(command -v zig || true)}
 SERVICE_NAME=${SERVICE_NAME:-}
+WITH_PTY=${WITH_PTY:-1}
+WITH_FFF=${WITH_FFF:-1}
+PT_ZIG=${PT_ZIG:-$(command -v zig016 || true)}
 
 # All-platform bun installs are multi-GB; keep the tarball cache and temp
 # extraction next to the source cache so a small root filesystem cannot
@@ -232,6 +241,121 @@ if grep -q 'parcel/watcher-' "$CLI_PKG/script/build.ts" packages/core/src/filesy
     done
 fi
 
+# --- native extras: opencode-pty daemon + fff finder (v2) --------------------
+# Borrowed from FreeBSD ports misc/opencode (samm@FreeBSD.org). Persistent
+# terminals need the opencode-pty daemon embedded via OPENCODE_PTY_BIN; the
+# fff fuzzy finder needs a native libfff_c.so platform package. Both need
+# cargo; without it they are skipped with a warning (binary works as before).
+PTY_BIN=""
+EMBED_FFF=""
+if [ "$MAJOR" != 1 ] && { [ "$WITH_PTY" = 1 ] || [ "$WITH_FFF" = 1 ]; }; then
+    if ! command -v cargo >/dev/null 2>&1; then
+        log "cargo not found: skipping pty/fff extras (pkg install rust to enable)"
+    else
+        export CARGO_TARGET_DIR=${CARGO_TARGET_DIR:-$SRC_DIR/cargo-target}
+        mkdir -p "$SRC_DIR/distfiles"
+
+        if [ "$WITH_PTY" = 1 ]; then
+            # The tag's daemon source can be ahead of its JS client (upstream
+            # ships prebuilt daemons for other platforms). Build the newest
+            # source revision whose protocol matches the client instead.
+            PTY_SRC=$WORK/packages/process-daemon
+            CLIENT_PROTO=$(grep -o 'const ProtocolVersion = [0-9]*' packages/core/src/persistent-pty/daemon.ts 2>/dev/null | grep -o '[0-9]*$' || true)
+            DAEMON_PROTO=$(grep -o 'PROTOCOL_VERSION: u32 = [0-9]*' "$PTY_SRC/src/protocol.rs" 2>/dev/null | grep -o '[0-9]*$' || true)
+            if [ -n "$CLIENT_PROTO" ] && [ -n "$DAEMON_PROTO" ] && [ "$CLIENT_PROTO" != "$DAEMON_PROTO" ]; then
+                log "daemon protocol $DAEMON_PROTO != client $CLIENT_PROTO; locating matching daemon revision"
+                PTY_COMMIT=""
+                for c in $(git -C "$SRC_DIR/opencode" rev-list "$TAG" -- packages/process-daemon/src/protocol.rs | head -100); do
+                    if git -C "$SRC_DIR/opencode" show "$c:packages/process-daemon/src/protocol.rs" 2>/dev/null | grep -q "PROTOCOL_VERSION: u32 = $CLIENT_PROTO;"; then
+                        PTY_COMMIT=$c
+                        break
+                    fi
+                done
+                [ -n "$PTY_COMMIT" ] || die "no daemon revision with protocol $CLIENT_PROTO found"
+                PTY_SRC=$SRC_DIR/pty-src-$VER
+                if [ ! -d "$PTY_SRC" ]; then
+                    log "extracting process-daemon at $PTY_COMMIT"
+                    mkdir -p "$PTY_SRC"
+                    git -C "$SRC_DIR/opencode" archive "$PTY_COMMIT" packages/process-daemon | tar -x -C "$PTY_SRC" --strip-components=2
+                fi
+            fi
+            GHOSTTY_REV=$(cat "$PTY_SRC/ghostty-revision" 2>/dev/null || true)
+            if [ -z "$GHOSTTY_REV" ]; then
+                log "no ghostty-revision pin in this tag: skipping opencode-pty"
+            else
+                [ -n "$PT_ZIG" ] || die "WITH_PTY=1 needs zig 0.16 for ghostty; install zig016 or set PT_ZIG="
+                GT_SRC=$SRC_DIR/ghostty-$GHOSTTY_REV
+                if [ ! -d "$GT_SRC" ]; then
+                    log "fetching ghostty $GHOSTTY_REV"
+                    [ -f "$SRC_DIR/distfiles/ghostty-$GHOSTTY_REV.tar.gz" ] || \
+                        fetch -q -o "$SRC_DIR/distfiles/ghostty-$GHOSTTY_REV.tar.gz" \
+                            "https://codeload.github.com/ghostty-org/ghostty/tar.gz/$GHOSTTY_REV"
+                    mkdir -p "$GT_SRC"
+                    tar xzf "$SRC_DIR/distfiles/ghostty-$GHOSTTY_REV.tar.gz" -C "$GT_SRC" --strip-components=1
+                fi
+                # zig 0.16 renamed trimRight/trimLeft; this ghostty pin predates it
+                if grep -q 'trimRight' "$GT_SRC/src/build/GhosttyI18n.zig" 2>/dev/null; then
+                    git -C "$GT_SRC" apply "$DIR/ghostty-zig-0.16-std.patch"
+                fi
+                # warm ghostty's zig dependency cache once per revision
+                export ZIG_GLOBAL_CACHE_DIR=$SRC_DIR/zig-pty-cache
+                mkdir -p "$ZIG_GLOBAL_CACHE_DIR"
+                if [ ! -f "$ZIG_GLOBAL_CACHE_DIR/.warmed-$GHOSTTY_REV" ]; then
+                    log "warming ghostty zig cache ($("$PT_ZIG" version))"
+                    (cd "$GT_SRC" && "$PT_ZIG" build --fetch=all)
+                    touch "$ZIG_GLOBAL_CACHE_DIR/.warmed-$GHOSTTY_REV"
+                fi
+                # build.rs: accept a vendored ghostty tree (no .git). patch(1)
+                # works in and out of git repos; git apply from a subdir would
+                # silently skip the patch.
+                if ! grep -Fq 'if source.join(".git").exists()' "$PTY_SRC/build.rs"; then
+                    log "applying opencode-pty-build-rs-freebsd.patch (vendored ghostty)"
+                    patch -p1 -d "$PTY_SRC" < "$DIR/opencode-pty-build-rs-freebsd.patch"
+                fi
+                # opencode-pty.ts: embed for freebsd, not just darwin/linux/win32
+                if ! grep -q '!== "freebsd"' "$CLI_PKG/script/opencode-pty.ts"; then
+                    git apply "$DIR/opencode-pty-script-freebsd.patch"
+                fi
+                # build.rs runs `zig` from PATH; ghostty needs 0.16 there
+                mkdir -p "$SRC_DIR/pty-shim"
+                ln -sf "$PT_ZIG" "$SRC_DIR/pty-shim/zig"
+                log "building opencode-pty (cargo release)"
+                (cd "$PTY_SRC" && \
+                    PATH="$SRC_DIR/pty-shim:$PATH" \
+                    GHOSTTY_SOURCE_DIR="$GT_SRC" \
+                    OPENCODE_ZIG_CPU=baseline \
+                    cargo build --release --locked)
+                PTY_BIN=$CARGO_TARGET_DIR/release/opencode-pty
+                [ -x "$PTY_BIN" ] || die "opencode-pty binary not produced at $PTY_BIN"
+            fi
+        fi
+
+        if [ "$WITH_FFF" = 1 ]; then
+            FFF_VER=$(grep -o '@ff-labs/fff-bun@[0-9][0-9.]*' bun.lock | head -1 | cut -d@ -f3)
+            if [ -z "$FFF_VER" ]; then
+                log "no @ff-labs/fff-bun pin in this tag: skipping fff"
+            else
+                FFF_SRC=$SRC_DIR/fff-v$FFF_VER
+                if [ ! -d "$FFF_SRC" ]; then
+                    log "fetching fff v$FFF_VER"
+                    [ -f "$SRC_DIR/distfiles/fff-v$FFF_VER.tar.gz" ] || \
+                        fetch -q -o "$SRC_DIR/distfiles/fff-v$FFF_VER.tar.gz" \
+                            "https://codeload.github.com/dmtrKovalenko/fff/tar.gz/v$FFF_VER"
+                    mkdir -p "$FFF_SRC"
+                    tar xzf "$SRC_DIR/distfiles/fff-v$FFF_VER.tar.gz" -C "$FFF_SRC" --strip-components=1
+                fi
+                log "building libfff_c (cargo release)"
+                (cd "$FFF_SRC" && cargo build --release --locked --package fff-c)
+                FFF_SO=$CARGO_TARGET_DIR/release/libfff_c.so
+                [ -f "$FFF_SO" ] || die "libfff_c.so not produced at $FFF_SO"
+                python3 "$DIR/setup-fff-freebsd.py" "$WORK" "$FFF_SO" "$FFF_VER" x64
+                EMBED_FFF=1
+            fi
+        fi
+    fi
+fi
+[ -z "$PTY_BIN" ] || export OPENCODE_PTY_BIN="$PTY_BIN"
+
 # --- build -------------------------------------------------------------------
 log "compiling opencode $VER"
 (cd "$CLI_PKG" && OPENCODE_VERSION="$VER" PATH="$(dirname "$BUN"):$PATH" "$BUN" run script/build.ts $BUILD_FLAGS --skip-install)
@@ -244,6 +368,14 @@ fi
 [ -x "$OUT" ] || die "build output missing: $OUT"
 
 [ -n "${SKIP_VERIFY:-}" ] || { log "smoke test"; "$OUT" --version; }
+if [ -n "$PTY_BIN" ]; then
+    grep -aq 'libghostty' "$OUT" || die "opencode-pty daemon not embedded in the binary"
+    log "opencode-pty daemon embedded"
+fi
+if [ -n "$EMBED_FFF" ]; then
+    grep -aq 'crates/fff-c/src' "$OUT" || die "libfff_c not embedded in the binary"
+    log "fff native library embedded"
+fi
 
 # --- install -----------------------------------------------------------------
 # Swap atomically: a running binary keeps "text file busy" on plain cp, and a
