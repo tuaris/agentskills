@@ -16,13 +16,12 @@ How to run [OpenCode](https://opencode.ai) (repo `anomalyco/opencode`, formerly
 - **Path B (fallback): Linuxulator.** Run the official `opencode-linux-x64`
   (glibc) build under `linux64.ko`.
 
-**Verified state (2026-10-12, FreeBSD 15.1-RELEASE):** native binaries for
-**1.19.0** and **2.0.27** installed side-by-side at
+**Verified state (2026-11-11, FreeBSD 15.1-RELEASE):** native binaries for
+**1.19.0**, **2.0.27** and **2.2.7** installed side-by-side at
 `~/.local/share/opencode-freebsd/<ver>/bin/opencode`, with `~/bin/opencode`
-pointing at 2.0.27 (matches the v2 desktop app). The `opencode_serve` boot
-service ran 2.0.27 with basic auth (401 without credentials, verified on LAN,
-loopback and bridge interfaces). All local patches are preserved in
-`scripts/`.
+pointing at 2.2.7. The `opencode_serve` boot service runs 2.2.7 with basic
+auth (verified on loopback, LAN and via https://opencode.morante.dev). All
+local patches are preserved in `scripts/`.
 
 ## Two version lines
 
@@ -31,7 +30,9 @@ OpenCode ships two active lines and the client/server must match:
 | Line | Git tag | Package | `@opentui/core` | Zig | Consumer |
 |---|---|---|---|---|---|
 | v1 (CLI stable) | `v1.19.0` | `packages/opencode` | 0.4.5 | 0.15.2 (`pkg zig015`) | CLI 1.x |
-| v2 (desktop) | `v2.0.27` | `packages/cli` | 0.5.17 | 0.16.0 (`pkg zig`) | Desktop app 2.0.27 |
+| v2 (desktop) | `v2.2.7` | `packages/cli` | 0.8.1 | 0.17.0 (`zig017`, official tarball) | Desktop app 2.x, CLI |
+
+Previous verified v2 combo: `v2.0.27` / `@opentui/core` 0.5.17 / zig 0.16.0.
 
 The v2 desktop builds ship through the `anomalyco/opencode-beta` channel repo
 (the Releases page tracks the v1 CLI line; v2.0.x exist as git tags without
@@ -155,7 +156,7 @@ Verification checklist:
 | Runs natively | `procstat binary $(pgrep -f path/to/opencode \| head -1)` | `OPREL` 14xx, no `/compat/linux` mappings |
 | TUI | `tmux new-session -d -s oc -x 220 -y 50 'opencode; sleep 60'` then `tmux capture-pane -pt oc` | OpenCode splash + prompt |
 | Headless server (v1.x) | `opencode serve --hostname 127.0.0.1 --port 4555 &` then `curl -s 127.0.0.1:4555/global/health` | `{"healthy":true,...}` |
-| Headless server (v2.x) | same, then `curl -s -u opencode:$OPENCODE_SERVER_PASSWORD 127.0.0.1:4555/api/info` | `{"version":"2.0.27",...}` |
+| Headless server (v2.x) | same, then `curl -s -u opencode:$OPENCODE_SERVER_PASSWORD 127.0.0.1:4555/api/info` | `{"version":"<ver>",...}` |
 
 ## Path A2 (v2.0.27): native build
 
@@ -226,6 +227,61 @@ v2 run-time differences that matter operationally:
 - `@opencode-ai/pty` has no FreeBSD subpackage; embedding is skipped and the
   terminal/PTY capability may be limited until a native pty binary is built
   (`OPENCODE_PTY_BIN` env can inject a locally built one).
+
+### v2.2.x deltas (verified 2026-11-11, v2.2.7)
+
+Same pipeline as Path A2; the self-update script handles all of it. Deltas
+that matter for manual rebuilds:
+
+1. **bun ^1.4.4** required (1.4.3 fails the build's version check). Official
+   `bun-freebsd-x64.zip` from the bun-v1.4.4 release; keep the old binary as
+   `~/.local/bin/bun-<oldver>.bak`.
+2. **zig 0.17.0** for opentui 0.8.1 (`minimum_zig_version` in
+   `packages/native/build.zig.zon`). No pkg at the time: official tarball to
+   `/opt/zig-x86_64-freebsd-0.17.0`, symlink `/usr/local/bin/zig017`, run the
+   script with `ZIG=/usr/local/bin/zig017`.
+3. **Target selection** moved from `--target=opencode-freebsd-x64` argv to
+   `OPENCODE_TARGET=freebsd-x64` env (no `opencode-` prefix). The script
+   greps build.ts and picks the right form per tag.
+4. **Parcel watcher** literal-require rewrite moved from
+   `packages/cli/script/build.ts` to
+   `packages/core/src/filesystem/watcher-binding.ts`; the staging step is
+   unchanged (the script checks both locations).
+5. **opentui 0.8.1** still builds from `packages/native` with
+   `opentui-native-build-zig-freebsd-v05.patch`. The source resolver moved
+   to a `#opentui/runtime-assets` module, but the published npm package
+   keeps the `chunk-bun-*.js` / `chunk-node-*.js` / `node-assets.js` layout,
+   so `patch-opentui-core-resolver.py` applies unchanged.
+6. **PTY embedding** auto-skips FreeBSD and falls back to `opencode-pty` on
+   PATH.
+7. **Disk space:** the all-platform `bun install` is multi-GB. The script
+   exports `BUN_INSTALL_CACHE_DIR` and `TMPDIR` under `$SRC_DIR` so a small
+   root filesystem cannot ENOSPC mid-install. Check `df -h /` first anyway.
+8. bun install warns about upstream `patches/*.patch` entries whose
+   dependencies were removed or upgraded (e.g. `@ai-sdk/mistral`,
+   `gcp-metadata`); harmless, unrelated to our patches.
+
+## Model catalog refresh (v2.2.x)
+
+- The CLI/server fetch the **models.opencode.ai v2 catalog** with a 5-minute
+  TTL, a KV cache and a bundled snapshot fallback; `opencode models` lists
+  the merged result. Provider endpoints are not queried for model lists at
+  runtime.
+- Models the endpoint serves but models.dev lacks (e.g. `qwen4-max-preview`
+  on the Alibaba Token Plan endpoint) are added as custom entries under
+  `provider.<id>.models` in `~/.config/opencode/opencode.jsonc`: name,
+  capabilities, `compatibility.reasoningField`, thinking `variants`.
+  Verified: `opencode models | grep qwen4` and
+  `opencode run --model alibaba/qwen4-max-preview#none "..."` (variant ids:
+  `none`, `high`, `max`).
+- **Headless credential storage:** `opencode auth login` with the `key`
+  method requires a TTY. Without one, call the server API directly:
+  `opencode api integration.connect.key --param integrationID=<id>
+  --data '{"key":"...","label":"..."}'` (source the key from the service env
+  file at runtime; never echo it). `opencode auth list` then shows the
+  integration as `stored`. Without stored credentials `opencode run` fails
+  with `<PROVIDER>_API_KEY is not set` even when the boot service's env file
+  has the key: the CLI background service does not read that env file.
 
 ## Path B: Linuxulator (quick install, no build)
 
@@ -311,14 +367,14 @@ server in `setup-freebsd-zed-remote`).
 target tag, read the pinned `@opentui/core` from `bun.lock`, apply the right
 patch files, build `libopentui.so`, wire node_modules, compile, smoke-test,
 install to `~/.local/share/opencode-freebsd/<ver>/` and repoint
-`~/bin/opencode`). Verified end-to-end 2026-10-12 for **both** `--version
-v2.0.27` and `--version v1.19.0`.
+`~/bin/opencode`). Verified end-to-end 2026-10-12 for `--version v2.0.27`
+and `--version v1.19.0`, and 2026-11-11 for v2.2.7 (default tag discovery).
 
 ```sh
 # prerequisites: native bun in PATH (or BUN=), python3, git, the node-gyp
 # toolchain from the Path A prereqs, and a zig matching the opentui tag:
-BUN=~/.local/bin/bun ZIG=/usr/local/bin/zig016 \
-  /path/to/skill/scripts/opencode-freebsd-selfupdate.sh        # newest v2.0.x tag
+BUN=~/.local/bin/bun ZIG=/usr/local/bin/zig017 \
+  /path/to/skill/scripts/opencode-freebsd-selfupdate.sh        # newest v2.x tag
 BUN=~/.local/bin/bun ZIG=/usr/local/bin/zig0152 \
   /path/to/skill/scripts/opencode-freebsd-selfupdate.sh --version v1.19.0
 ```
@@ -327,6 +383,8 @@ BUN=~/.local/bin/bun ZIG=/usr/local/bin/zig0152 \
   `/usr/local/bin/zig0152` and `/usr/local/bin/zig016` symlinks (pkg
   `zig`/`zig015` both claim `/usr/local/bin/zig` and clobber each other, so do
   not rely on the unversioned path).
+- Tag discovery globs `v2.*` with `sort -V`; tag fetches use `--force` because
+  upstream occasionally rewrites tags (a rejected update aborts `set -e`).
 - Set `SERVICE_NAME=opencode_serve` and the script also handles daemons
   holding the old binary: stops the service, kills leftover processes (the
   text lock defeats plain cp), swaps the binary atomically, and starts it
@@ -345,7 +403,7 @@ BUN=~/.local/bin/bun ZIG=/usr/local/bin/zig0152 \
   `@opentui/core` and `@ff-labs/fff-bun` versions in
   `packages/opencode/package.json`. If `@opentui/core` changed, rebuild
   `libopentui.so` from the matching opentui tag (and note its zig version pin
-  — 0.4.5 wants zig 0.15.2, opentui 0.6.x wants zig 0.16) and regenerate the
+  — 0.4.5 wants zig 0.15.2, 0.5.x/0.6.x want zig 0.16, 0.8.1 wants zig 0.17.0) and regenerate the
   platform package. The two source patches (`scripts/*.patch`) are small and
   usually re-apply cleanly; the chunk patcher is idempotent and re-checks its
   anchors.

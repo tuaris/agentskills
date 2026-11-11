@@ -21,7 +21,7 @@
 #   opencode-freebsd-selfupdate.sh [--version vX.Y.Z] [--dry-run]
 #
 # Environment knobs:
-#   VERSION          opencode git tag (default: newest v2.0.x tag upstream)
+#   VERSION          opencode git tag (default: newest v2.x tag upstream)
 #   SRC_DIR          cached clone dir    (default: $XDG_CACHE_HOME/opencode-freebsd or ~/.cache/opencode-freebsd)
 #   INSTALL_PREFIX   install root        (default: $HOME/.local/share/opencode-freebsd)
 #   LINK             binary symlink      (default: $HOME/bin/opencode; empty = none)
@@ -55,6 +55,13 @@ BUN=${BUN:-$(command -v bun || true)}
 ZIG=${ZIG:-$(command -v zig || true)}
 SERVICE_NAME=${SERVICE_NAME:-}
 
+# All-platform bun installs are multi-GB; keep the tarball cache and temp
+# extraction next to the source cache so a small root filesystem cannot
+# ENOSPC mid-install.
+export BUN_INSTALL_CACHE_DIR=${BUN_INSTALL_CACHE_DIR:-$SRC_DIR/bun-cache}
+export TMPDIR=${TMPDIR:-$SRC_DIR/tmp}
+mkdir -p "$BUN_INSTALL_CACHE_DIR" "$TMPDIR"
+
 log() { printf '%s\n' "== $*"; }
 die() { printf '%s\n' "!! $*" >&2; exit 1; }
 need() { command -v "$1" >/dev/null 2>&1 || die "missing dependency: $1"; }
@@ -67,8 +74,8 @@ need git; need python3
 if [ -n "$VERSION_ARG" ]; then
     TAG=$VERSION_ARG
 else
-    TAG=$(git ls-remote --tags "$OPENCODE_REPO" 'v2.0.*' | sed 's#.*refs/tags/##' | grep -v '\^{}' | sort -t. -k2,2n -k3,3n | tail -1)
-    [ -n "$TAG" ] || die "could not discover a v2.0.x tag upstream; pass --version"
+    TAG=$(git ls-remote --tags "$OPENCODE_REPO" 'v2.*' | sed 's#.*refs/tags/##' | grep -v '\^{}' | sort -V | tail -1)
+    [ -n "$TAG" ] || die "could not discover a v2.x tag upstream; pass --version"
 fi
 VER=${TAG#v}
 MAJOR=$(printf '%s' "$VER" | cut -d. -f1)
@@ -87,8 +94,10 @@ if [ ! -d "$SRC_DIR/opentui/.git" ]; then
 fi
 
 log "fetching tags"
-git -C "$SRC_DIR/opencode" fetch --quiet --tags --prune origin
-git -C "$SRC_DIR/opentui" fetch --quiet --tags --prune origin
+# --force: upstream occasionally rewrites tags; the cache is a mirror, and a
+# rejected tag update would otherwise abort the run under set -e.
+git -C "$SRC_DIR/opencode" fetch --quiet --tags --prune --force origin
+git -C "$SRC_DIR/opentui" fetch --quiet --tags --prune --force origin
 
 WORK="$SRC_DIR/build-$VER"
 if [ ! -d "$WORK" ]; then
@@ -106,7 +115,14 @@ if [ "$MAJOR" = 1 ]; then
 else
     CLI_PKG=packages/cli
     PATCH_OC=opencode-cli-build-ts-freebsd-v2.patch
-    BUILD_FLAGS="--target=opencode-freebsd-x64"
+    # v2.2.x selects the target via OPENCODE_TARGET (env, no binary prefix);
+    # older v2 tags parse --target=opencode-freebsd-x64 from argv.
+    if grep -q 'OPENCODE_TARGET' "$CLI_PKG/script/build.ts"; then
+        BUILD_FLAGS=""
+        export OPENCODE_TARGET=freebsd-x64
+    else
+        BUILD_FLAGS="--target=opencode-freebsd-x64"
+    fi
 fi
 
 if [ ! -f "$DIR/$PATCH_OC" ]; then
@@ -203,7 +219,8 @@ if [ -f "$DIR/patch-effect-fs-dev-fold.py" ]; then
 fi
 
 # v2: parcel watcher platform package is required as a literal require()
-if grep -q 'parcel/watcher-' "$CLI_PKG/script/build.ts" 2>/dev/null; then
+# (build.ts in older tags, packages/core watcher-binding.ts since v2.2.x)
+if grep -q 'parcel/watcher-' "$CLI_PKG/script/build.ts" packages/core/src/filesystem/watcher-binding.ts 2>/dev/null; then
     W_DIR=node_modules/.bun/@parcel+watcher-freebsd-x64@*/node_modules/@parcel/watcher-freebsd-x64
     for src in $W_DIR; do
         if [ -d "$src" ]; then
