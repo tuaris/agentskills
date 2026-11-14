@@ -170,7 +170,7 @@ index 0000000..e3e359a
 +#[cfg(target_os = "freebsd")]
 +pub use crashes_freebsd::*;
 diff --git a/crates/fs/src/fs.rs b/crates/fs/src/fs.rs
-index 893c25f..f6f64a6 100644
+index e6ef06b..de1679d 100644
 --- a/crates/fs/src/fs.rs
 +++ b/crates/fs/src/fs.rs
 @@ -513,8 +513,8 @@ impl FileHandle for std::fs::File {
@@ -185,10 +185,10 @@ index 893c25f..f6f64a6 100644
          let result = unsafe { libc::fcntl(fd.as_raw_fd(), libc::F_KINFO, kif.as_mut_ptr()) };
          anyhow::ensure!(result != -1, "fcntl returned -1");
 diff --git a/crates/gpui/src/gpui.rs b/crates/gpui/src/gpui.rs
-index d4da5aa..32c20bd 100644
+index dbb8386..c2eaefb 100644
 --- a/crates/gpui/src/gpui.rs
 +++ b/crates/gpui/src/gpui.rs
-@@ -40,6 +40,7 @@ pub mod profiler;
+@@ -71,6 +71,7 @@ mod hot_reload;
      test,
      target_os = "windows",
      target_os = "linux",
@@ -196,30 +196,29 @@ index d4da5aa..32c20bd 100644
      target_family = "wasm",
      feature = "test-support",
      feature = "bench-support"
-@@ -194,7 +195,7 @@ pub use keymap::*;
- pub use path_builder::*;
- pub use platform::*;
- pub use profiler::*;
+@@ -108,7 +109,7 @@ pub mod private {
+     pub use serde_json;
+ }
+ 
 -#[cfg(any(target_os = "windows", target_os = "linux", target_family = "wasm"))]
 +#[cfg(any(target_os = "windows", target_os = "linux", target_os = "freebsd", target_family = "wasm"))]
  pub use queue::{PriorityQueueReceiver, PriorityQueueSender};
- pub use refineable::*;
- pub use scene::*;
+ 
+ pub use accesskit::{Action as AccessibleAction, Orientation, Role, Toggled};
 diff --git a/crates/languages/src/python.rs b/crates/languages/src/python.rs
+index dedcf1f..912ac7d 100644
 --- a/crates/languages/src/python.rs
 +++ b/crates/languages/src/python.rs
-@@ -2737,8 +2737,14 @@ impl PyreflyLspAdapter {
- #[cfg(target_os = "linux")]
- impl PyreflyLspAdapter {
-     const GITHUB_ASSET_KIND: AssetKind = AssetKind::TarGz;
+@@ -2740,6 +2740,12 @@ impl PyreflyLspAdapter {
      const ARCH_SERVER_NAME: &str = "linux";
  }
-+
+ 
 +#[cfg(target_os = "freebsd")]
 +impl PyreflyLspAdapter {
 +    const GITHUB_ASSET_KIND: AssetKind = AssetKind::TarGz;
 +    const ARCH_SERVER_NAME: &str = "unknown-freebsd";
 +}
- 
++
  #[cfg(target_os = "windows")]
  impl PyreflyLspAdapter {
+     const GITHUB_ASSET_KIND: AssetKind = AssetKind::Zip;

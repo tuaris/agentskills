@@ -192,13 +192,24 @@ echo ""
 # --- 4. Fetch source at the exact commit ------------------------------------
 mkdir -p "${BUILD_ROOT}" "${CARGO_TARGET_DIR}" "${CARGO_HOME_DIR}" "${TMPDIR_BUILD}"
 
+reused_checkout=0
 if [ -d "${REPO_DIR}/.git" ]; then
     echo "Updating existing checkout at ${REPO_DIR} ..."
     cd "${REPO_DIR}"
-    git checkout -q -- . 2>/dev/null || true
-    git clean -fdq
-    git fetch --depth 1 origin "${COMMIT}"
-    git checkout -q FETCH_HEAD
+    # A previous run for this same commit already has the patch applied.
+    # Reusing that tree keeps file mtimes intact, so retrying after a staged
+    # binary problem does not trigger a needless full LTO rebuild.
+    if [ "$(git rev-parse HEAD)" = "${COMMIT}" ] &&
+        git apply --reverse --check "${PATCH_FILE}" 2>/dev/null
+    then
+        reused_checkout=1
+        echo "Reusing checkout: already at ${COMMIT} with the FreeBSD patch applied."
+    else
+        git reset -q --hard HEAD
+        git clean -fdq
+        git fetch --depth 1 origin "${COMMIT}"
+        git checkout -q FETCH_HEAD
+    fi
 else
     echo "Cloning Zed source into ${REPO_DIR} ..."
     mkdir -p "${REPO_DIR}"
@@ -213,14 +224,18 @@ echo "Checked out: $(git log -1 --oneline)"
 
 # --- 5. Apply the FreeBSD patch ----------------------------------------------
 echo ""
-echo "Applying FreeBSD patch ..."
-if ! git apply --check "${PATCH_FILE}" 2>/dev/null; then
-    echo "ERROR: patch does not apply cleanly against this commit." >&2
-    echo "Zed's source has likely changed in ways that need a refreshed patch." >&2
-    echo "See the 'Updating the patch' section in this skill's SKILL.md." >&2
-    exit 1
+if [ "${reused_checkout}" -eq 1 ]; then
+    echo "FreeBSD patch already applied."
+else
+    echo "Applying FreeBSD patch ..."
+    if ! git apply --check "${PATCH_FILE}" 2>/dev/null; then
+        echo "ERROR: patch does not apply cleanly against this commit." >&2
+        echo "Zed's source has likely changed in ways that need a refreshed patch." >&2
+        echo "See the 'Updating the patch' section in this skill's SKILL.md." >&2
+        exit 1
+    fi
+    git apply "${PATCH_FILE}"
 fi
-git apply "${PATCH_FILE}"
 
 # --- 6. Build -----------------------------------------------------------------
 echo ""
@@ -230,15 +245,23 @@ echo "hardware - it's a full release build with LTO) ..."
 CARGO_BUILD_JOBS_ARGS=""
 [ -n "${JOBS:-}" ] && CARGO_BUILD_JOBS_ARGS="--jobs ${JOBS}"
 
+# Cargo reports each linked binary as {"executable":"<path>"} on stdout in
+# JSON mode; diagnostics stay human-readable on stderr. Asking cargo for the
+# path instead of hardcoding it keeps this script correct across upstream
+# target renames (remote_server became remote-server in the 1.28 line).
+BUILD_ARTIFACTS="${BUILD_ROOT}/build-artifacts.json"
 env \
     TMPDIR="${TMPDIR_BUILD}" \
     CARGO_TARGET_DIR="${CARGO_TARGET_DIR}" \
     CARGO_HOME="${CARGO_HOME_DIR}" \
-    cargo build --release --package remote_server ${CARGO_BUILD_JOBS_ARGS}
+    cargo build --release --package remote_server \
+        --message-format=json-render-diagnostics \
+        ${CARGO_BUILD_JOBS_ARGS} > "${BUILD_ARTIFACTS}"
 
-BUILT_BIN="${CARGO_TARGET_DIR}/release/remote_server"
-if [ ! -x "${BUILT_BIN}" ]; then
-    echo "ERROR: build did not produce ${BUILT_BIN}" >&2
+BUILT_BIN=$(sed -n 's/.*"executable":"\([^"]*\)".*/\1/p' "${BUILD_ARTIFACTS}" | tail -n 1)
+if [ -z "${BUILT_BIN}" ] || [ ! -x "${BUILT_BIN}" ]; then
+    echo "ERROR: cargo reported no executable artifact for remote_server." >&2
+    echo "       See ${BUILD_ARTIFACTS}" >&2
     exit 1
 fi
 

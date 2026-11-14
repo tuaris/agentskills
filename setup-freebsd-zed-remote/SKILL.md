@@ -35,10 +35,8 @@ has neither:
    this check (FreeBSD is POSIX-compatible enough that the rest of the
    Linux code path just works).
 
-Unlike the separate `setup-freebsd-cascade` skill (for Devin/Windsurf),
-which runs a genuine Linux binary under FreeBSD's Linux ABI compatibility
-layer, **Zed's remote-server here is a true native FreeBSD build** — no
-Linux compat layer is needed or used for it.
+**Zed's remote-server here is a true native FreeBSD build** — no Linux ABI
+compatibility layer is needed or used for it.
 
 ## Requirements
 
@@ -85,19 +83,30 @@ This is a single self-contained script. On first run it will:
    later runs if already present).
 2. Clone the Zed source at the exact commit from your version string into
    `~/Documents/Code/zed-remote-build/zed` (override the parent dir with the
-   `BUILD_ROOT` environment variable).
-3. Apply `freebsd-remote-server.patch`.
-4. Build `remote_server` in release mode (30–60+ minutes on modest/shared
-   hardware — it's a full LTO release build of a large crate graph).
+   `BUILD_ROOT` environment variable). If that checkout is already at the
+   commit with the patch applied, it is reused as-is rather than reset and
+   re-patched, so retries do not force a rebuild.
+3. Apply `freebsd-remote-server.patch` (skipped when step 2 reused a
+   checkout that already has it).
+4. Build the `remote_server` package in release mode (30-60+ minutes on
+   modest/shared hardware; it is a full LTO release build of a large crate
+   graph). The bin target is named `remote-server`, and the script asks
+   Cargo where it put the binary (`--message-format=json-render-diagnostics`,
+   recorded in `BUILD_ROOT/build-artifacts.json`) instead of assuming a
+   path, because upstream renamed the target from `remote_server` in the
+   1.28 line.
 5. Strip debug symbols with `llvm-objcopy` and stage the binary at
    `~/.zed_server/zed-remote-server-stable-<full-version>` (a symlink into
    `BUILD_ROOT`, so root stays untouched).
 6. Verify it by running `<staged-binary> version`.
 
 Expect the run to take the better part of an hour the first time (fetching
-~100+ git-sourced crate dependencies plus the LTO build itself). Subsequent
-runs for a new version reuse the existing checkout and Cargo caches, so
-they're faster — the compile itself is still the dominant cost.
+~100+ git-sourced crate dependencies plus the LTO build itself). Runs for a
+new version reuse the Cargo caches but still recompile most of the graph,
+because the patch touches foundation crates (`gpui`, `fs`). A retry for a
+version that was already built finishes in under a minute: the checkout is
+reused, Cargo reports every unit fresh, and only the strip and stage steps
+run.
 
 > **Tip:** if you already have a manual/experimental checkout with a warm
 > Cargo cache elsewhere, set `BUILD_ROOT` to its parent before the first run
@@ -142,11 +151,9 @@ This is more than a convenience: because the `uname` shim makes the client
 believe the remote is Linux, a version mismatch (staged binary older than
 the client) makes Zed try to download and run a genuine **Linux** ELF
 `zed-remote-server` on this host. That download will "succeed" but the
-binary won't execute — FreeBSD has no Linux ABI compatibility layer enabled
-here (unlike the `setup-freebsd-cascade` skill's Devin/Windsurf setup, which
-does enable one, for an actual Linux binary). There is no automatic
-fallback; you must pre-stage the correct native FreeBSD binary before the
-client ever gets a chance to try downloading one.
+binary won't execute — no Linux ABI compatibility layer is enabled here.
+There is no automatic fallback; you must pre-stage the correct native
+FreeBSD binary before the client ever gets a chance to try downloading one.
 
 Old staged versions under `~/.zed_server/` and their backing binaries under
 `BUILD_ROOT` (e.g. `~/Documents/Code/zed-remote-build/remote_server-*`) are
@@ -221,3 +228,13 @@ FreeBSD host itself.
   genuinely newer language feature.
 - **Disk space.** See the Requirements section — always point
   `BUILD_ROOT` at a non-root filesystem on space-constrained hosts.
+- **Long builds die with the SSH session.** The script runs in the
+  foreground, so closing or losing the SSH connection can kill it mid-build
+  and skip the strip/stage steps, even after Cargo has finished. For
+  unattended runs, start it detached and log the output:
+  `daemon -o build.log sh ./build-zed-remote-server.sh -f <version>`.
+- **Stale Linux download in `~/.zed_server`.** If the client ever connects
+  without a staged binary, it downloads a Linux `remote-server` tarball
+  (`zed-remote-server-stable-<version>-download-*.gz`) that can never run
+  here. The download does not resolve the mismatch, so rebuild and stage the
+  FreeBSD binary, then delete the tarball.
